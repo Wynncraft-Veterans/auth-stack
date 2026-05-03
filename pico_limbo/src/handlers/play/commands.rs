@@ -1,3 +1,4 @@
+use crate::handlers::configuration::send_message;
 use crate::handlers::play::set_player_position_and_rotation::teleport_player_to_spawn;
 use crate::server::batch::Batch;
 use crate::server::client_state::ClientState;
@@ -9,6 +10,7 @@ use minecraft_packets::play::chat_message_packet::ChatMessagePacket;
 use minecraft_packets::play::client_bound_player_abilities_packet::ClientBoundPlayerAbilitiesPacket;
 use minecraft_packets::play::transfer_packet::TransferPacket;
 use minecraft_protocol::prelude::{ProtocolVersion, VarInt};
+use pico_text_component::prelude::parse_mini_message;
 use thiserror::Error;
 use tracing::{info, warn};
 
@@ -39,6 +41,16 @@ impl PacketHandler for ChatMessagePacket {
                 client_state.get_unique_id(),
                 self.get_message().to_string(),
             );
+            // Acknowledge the chat line so the player has visible feedback
+            // that their message (typically an account-link code) was
+            // forwarded. dazebot's response is asynchronous and isn't
+            // surfaced here, so we only confirm transmission, not the
+            // accept/reject outcome.
+            if let Ok(component) =
+                parse_mini_message("<gray>[PicoLimbo]</gray> <green>Code sent.</green>")
+            {
+                send_message(&mut batch, &component, client_state.protocol_version());
+            }
         }
         Ok(batch)
     }
