@@ -4,3 +4,11 @@
 .gradle
 /.idea
 build
+# Eclipse / VSCode Java extension auto-build output
+bin/
+.classpath
+.project
+.settings/
+# VSCode workspace metadata
+.vscode/
+
