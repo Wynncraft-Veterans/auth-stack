@@ -1,127 +1,86 @@
-<div align="center">
+# auth-stack
 
-# PicoLimbo
+Patch overlay over [Quozul/PicoLimbo](https://github.com/Quozul/PicoLimbo) that
+adds chat-line forwarding to dazebot for Minecraft account-link verification.
+Production server: `verify.wynnvets.org:25565`.
 
-**An ultra-lightweight, multi-version Minecraft limbo server written in Rust**
+## What this repo holds
 
-*Supporting all Minecraft versions from 1.7.2 through 26.1.2*
-
-[![GitHub CI](https://img.shields.io/github/actions/workflow/status/Quozul/PicoLimbo/.github%2Fworkflows%2Fci.yml?branch=master)](https://github.com/Quozul/PicoLimbo/actions)
-[![Latest Release](https://img.shields.io/github/v/release/Quozul/PicoLimbo)](https://github.com/Quozul/PicoLimbo/releases)
-[![License](https://img.shields.io/github/license/Quozul/PicoLimbo)](LICENSE)
-[![Discord](https://img.shields.io/discord/1373364651118694585)](https://discord.gg/M2a9dxJPRy)
-
-[⭐ Star this repo](https://github.com/Quozul/PicoLimbo) • [💬 Join Discord](https://discord.gg/M2a9dxJPRy) • [📖 Read Docs](https://picolimbo.quozul.dev/)
-
-![PicoLimbo.png](docs/public/world.png)  
-*Schematic from [LOOHP/Limbo](https://github.com/LOOHP/Limbo)*
-
-</div>
-
----
-
-## Community & Support
-
-If you have any questions, suggestions or simply want to stay updated, please join the [Discord server](https://discord.gg/M2a9dxJPRy)!
-
-## Introduction
-
-PicoLimbo is a lightweight [limbo server](https://quozul.dev/posts/2025-05-14-what-are-minecraft-limbo-servers/) written
-in Rust, designed primarily as an AFK or waiting server. Its core focus is on efficiency by implementing only essential
-packets required for client login and maintaining connection (keep-alive) without unnecessary overhead.
-
-While not aiming to replicate every Minecraft server feature, PicoLimbo supports **all Minecraft versions from 1.7.2
-through 26.1.2**, excluding snapshots.
-
-## Features
-
-### 🎮 Wide Version Compatibility
-
-Supports all Minecraft versions from **1.7.2 to 26.1.2** natively, no need for ViaVersion or additional compatibility
-layers.
-
-### ⚡ Ultra-Lightweight & Highly Scalable
-
-Uses **0% CPU while idle** and handles **hundreds of players** under 10 MB RAM.
-[View benchmarks](https://picolimbo.quozul.dev/about/benchmarks.html).
-
-### 👤 Skin Support
-
-Player skins are supported. What else to say about that?
-
-### 🔀 Built-in Proxy Support
-
-Integrates with all major Minecraft proxies:
-
-- Velocity (Modern Forwarding)
-- BungeeCord (Legacy Forwarding)
-- BungeeGuard & BungeeGuardPlus authentication
-
-### ⚙️ Highly Configurable
-
-Customize your server using a simple TOML configuration file, including welcome message, spawn dimension, server list
-MOTD, and more. [View configuration docs](https://picolimbo.quozul.dev/config/introduction.html).
-
-### 🌍 Schematic World (Experimental)
-
-Load a custom world from a schematic file and customize spawn location (1.16+ only).
-
-![PicoLimbo.png](docs/public/PicoLimbo.png)  
-*The screenshot shows just a few of the supported Minecraft versions.*
-
----
-
-## Quick Start
-
-### Pterodactyl
-
-Official eggs for Pterodactyl are provided in the [pterodactyl](./pterodactyl) directory. More information about [PicoLimbo's Pterodactyl eggs](https://picolimbo.quozul.dev/about/installation.html#pterodactyl).
-
-### Docker
-
-```shell
-docker run --rm -p "25565:25565" ghcr.io/quozul/picolimbo:latest
+```
+patches/                          The entire functional delta (2 patches, ~50 LOC).
+docker/Dockerfile                 Clones upstream + applies patches + builds.
+docker-compose.yml                Local dev convenience (port 30066).
+.github/workflows/                CI: verify-patches (per-PR) + upstream-smoke (nightly).
+server.toml                       Starter config template (the live one lives in vets-deploy).
+.claude/                          Project docs (CLAUDE.md, upstream-sync.md).
 ```
 
-### Java Wrapper
+No upstream PicoLimbo source lives in this repo. The Docker build clones it
+fresh from `Quozul/PicoLimbo` at a configurable ref.
 
-For user wishing to run PicoLimbo inside your Velocity, BungeeCord proxy as a plugin or as a standalone jar file, you can download the [Java Wrapper from Modrinth](https://modrinth.com/plugin/picolimbo-java-wrapper).
+## How it works
 
-### Binary / Standalone
+1. The Dockerfile's `source` stage clones `Quozul/PicoLimbo.git` at
+   `PICOLIMBO_REF` (default = the pinned tag in `docker/Dockerfile`).
+2. `patches/*.patch` are applied with `git apply --check` first, then
+   `git apply`. Application failure aborts the build with the offending
+   patch named in the log.
+3. The `builder` stage compiles `pico_limbo` against the patched tree.
+4. The final stage is upstream's distroless runtime layout.
 
-Download from [GitHub Releases](https://github.com/Quozul/PicoLimbo/releases)
+The two patches are:
 
-For more detailed installation and configuration instructions, please refer to
-the [documentation website](https://picolimbo.quozul.dev/).
+- `0001-add-wynn-chat-forward-module.patch` — adds `pico_limbo/src/wynn.rs`
+  with `REMOTE_API_URL` env var + the helper that GETs
+  `{REMOTE_API_URL}/{uuid}/{msg}` per chat line.
+- `0002-wire-chat-forward-into-handler.patch` — wires `wynn::on_incoming_chat`
+  into `ChatMessagePacket` and acks each line with `[PicoLimbo] Code sent.`.
 
-## Documentation
+## Build / run locally
 
-**Complete documentation is available at [https://picolimbo.quozul.dev/](https://picolimbo.quozul.dev/)**
+```bash
+docker build -t picolimbo:local -f docker/Dockerfile .
+docker run --rm -p 25565:25565 -e REMOTE_API_URL=http://host.docker.internal:9421/api/auth picolimbo:local
+```
 
-For detailed installation instructions, configuration options, and usage examples, please visit the documentation
-website.
+Or via compose:
+```bash
+docker compose up --build
+```
 
----
+## Tracking upstream
 
-## Similar Projects
+There is no manual sync. The Dockerfile clones at `PICOLIMBO_REF`; bumping
+that var (in `docker/Dockerfile` or via build-arg) is the entire upgrade
+process. CI's `upstream-smoke` workflow rebuilds nightly against
+`PICOLIMBO_REF=master` and fails if patches no longer apply or the build
+no longer compiles — that is the early-warning signal.
 
-- [Limbo](https://github.com/LOOHP/Limbo): Supports only one Minecraft version at a time
-- [NanoLimbo](https://github.com/Nan1t/NanoLimbo): Actively maintained
-  (see [BoomEaro's fork](https://github.com/BoomEaro/NanoLimbo))
+When `upstream-smoke` fails:
 
----
+1. Read the job log to identify which patch broke (`git apply --check` names
+   the file) or which compile error appeared.
+2. Locally regenerate the patch:
+   ```bash
+   git clone https://github.com/Quozul/PicoLimbo.git /tmp/pl && cd /tmp/pl
+   git apply /path/to/auth-stack/patches/*.patch || # fix conflicts
+   # edit files
+   git diff > /path/to/auth-stack/patches/000X-foo.patch
+   ```
+3. Open a PR; `verify-patches` will gate it.
 
-## Star History
+For a deeper guide see [.claude/upstream-sync.md](.claude/upstream-sync.md).
 
-[![Star History Chart](https://api.star-history.com/svg?repos=Quozul/PicoLimbo&type=Date)](https://star-history.com/#Quozul/PicoLimbo&Date)
+## Don't
 
-## Contributing
+- Don't switch production to `ghcr.io/quozul/picolimbo` — it has no chat
+  forwarding and link codes will silently never resolve.
+- Don't add upstream code (`crates/`, `pico_libraries/`, `pico_limbo/`)
+  back into this repo. The whole point is that they live only in upstream.
+- Don't add authentication to the chat forward — the `verify` Docker
+  network already isolates it.
 
-Contributions are welcome! If you encounter any issues or have suggestions for improvement, please submit an issue or
-pull request on GitHub. Make sure to follow the existing code style and include relevant tests.
+## License
 
-1. Fork the repository.
-2. Create a new branch `git checkout -b <branch-name>`.
-3. Make changes and commit `git commit -m 'Add some feature'`.
-4. Push to your fork `git push origin <branch-name>`.
-5. Submit a pull request.
+MIT, inherited from upstream PicoLimbo. The patches are likewise released
+under MIT — see [LICENSE](LICENSE).

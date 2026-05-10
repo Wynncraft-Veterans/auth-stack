@@ -1,86 +1,77 @@
-# Syncing with upstream PicoLimbo
+# Upgrading the upstream PicoLimbo ref
 
-This fork tracks `Quozul/PicoLimbo`. The actual modifications are tiny (one file: [pico_limbo/src/wynn.rs](../pico_limbo/src/wynn.rs)) — most of the workspace is upstream code that we want to keep current to pick up new Minecraft protocol versions.
+The repo is a patch overlay, not a fork. There is no `git merge upstream/master` workflow — instead, we bump a build-time ref and regenerate any patches that no longer apply.
 
-## When to sync
+## When to upgrade
 
-- A new Minecraft client version comes out and Wynncraft players upgrade. Upstream's job is to add the protocol bits; we just merge.
-- A user reports they can't connect to `verify.wynnvets.org` because their client is too new. Almost always upstream-side.
-- Routinely, every few months — easier to merge small than enormous.
+- A new Minecraft client version comes out and Wynncraft players upgrade. Upstream ships protocol bits as releases tagged `vX.Y.Z+mcA.B.C`.
+- The `upstream-smoke` workflow goes red — upstream made a change that breaks our patches or compile.
+- Periodically, every few months, just to stay current.
 
-## Process
+## How to upgrade
 
-```bash
-# 0. From a clean working tree on master.
-git status
-git fetch
-git checkout master
-git pull
+1. Pick a new upstream ref (tag preferred):
+   ```bash
+   gh release list --repo Quozul/PicoLimbo
+   ```
+2. Edit `PICOLIMBO_REF` default in [docker/Dockerfile](../docker/Dockerfile):
+   ```diff
+   -ARG PICOLIMBO_REF=v1.12.2+mc26.1.2
+   +ARG PICOLIMBO_REF=v1.13.0+mc26.2.0
+   ```
+3. Test locally:
+   ```bash
+   docker build -t picolimbo:test -f docker/Dockerfile .
+   ```
+4. If the build succeeds → open a PR, `verify-patches` CI gates it, merge.
+5. Update vets-deploy `.env` if it overrides `PICOLIMBO_REF`, then redeploy.
 
-# 1. Add upstream as a remote (one-time).
-git remote add upstream https://github.com/Quozul/PicoLimbo.git
-git fetch upstream
+## When `git apply` fails
 
-# 2. Look at what's incoming.
-git log --oneline ..upstream/master | head -50
-
-# 3. Merge.
-git merge upstream/master
-```
-
-If there's a release tag you specifically want (e.g. `v1.12.2+mc26.1.2`), merge the tag instead of `upstream/master` — slightly more deliberate:
-
-```bash
-git fetch upstream --tags
-git merge v1.12.2+mc26.1.2
-```
-
-## Files where conflicts happen, and the rules
-
-### `pico_limbo/Cargo.toml`
-**Keep local:** the `uuid = { workspace = true }` line — `wynn.rs` depends on it. Upstream may add or remove unrelated deps; take theirs and re-add the local lines.
-**Likely-local additions:** `reqwest`, `axum` if the two-way HTTP server ever returns from the `two-way-api-archive` branch.
-
-### `Cargo.lock`
-Take upstream's. `cargo` re-resolves on the next build and re-introduces the local additions. Don't try to merge `Cargo.lock` by hand — the format isn't designed for it.
-
-### `pico_limbo/src/handlers/play/commands.rs`
-This is the chat hook. The local change adds the `crate::wynn::on_incoming_chat(...)` call and the `[PicoLimbo] Code sent.` reply. Upstream may refactor the `ChatMessagePacket` handler — re-apply the two local additions on top of whatever they did.
-
-The reply uses `parse_mini_message`; if upstream's text-component module renames, follow them.
-
-### `pico_limbo/src/wynn.rs`
-This file is **entirely local**. It will never appear in upstream conflicts unless someone moves things around in `pico_limbo/src/`. If it does appear, port the contents to wherever they ended up.
-
-### `docker/Dockerfile`
-Upstream's Dockerfile is the build context the vets-deploy stack uses. The `pico_libraries/` subtree was recently added upstream — make sure the Docker `COPY` lines include it (commit `ffc3e46` was a fix for this). When merging, double-check `COPY pico_libraries pico_libraries` (or equivalent) is present.
-
-### Crates under `crates/` and `pico_libraries/`
-Always take upstream wholesale. We deliberately do **not** modify these — every change creates a permanent merge conflict. If we ever need to change one, fork it into a new local crate rather than editing in place.
-
-## After merging
+The build's `source` stage will print exactly which patch and which file
+failed. Regenerate the patch:
 
 ```bash
-# 1. Build clean.
-cargo build --release -p pico_limbo
+# Get a fresh upstream tree at the target ref
+git clone https://github.com/Quozul/PicoLimbo.git /tmp/pl
+cd /tmp/pl
+git checkout v1.13.0+mc26.2.0
 
-# 2. If new errors point at our wynn.rs (rare): port the change. Otherwise it's just cargo lock re-resolution noise on first build.
+# Try to apply the existing patches; resolve conflicts manually
+git apply --reject /path/to/auth-stack/patches/000X-foo.patch
+# Look for *.rej files, integrate the rejected hunks by hand,
+# delete the *.rej files when done.
 
-# 3. Run locally for a sanity check.
-cargo run --release -p pico_limbo
-# Connect with a recent MC client to localhost:25565, type a message, watch dazebot/temp-server for the forwarded chat-line.
+# Stage the result and re-export
+git add -u
+git diff --cached > /path/to/auth-stack/patches/000X-foo.patch
 ```
 
-The CI in `.github/workflows/` is upstream's; it doesn't run our integration scenarios. Local testing matters here.
+Commit the regenerated patch, push, let CI verify.
 
-## Known divergences worth keeping in mind
+## When the patched source no longer compiles
 
-- Local `wynn.rs` exports `on_incoming_chat`. If upstream introduces a similarly-named hook in the future, we might be able to delete `wynn.rs` entirely and use theirs. Until then, the local code is what dazebot relies on.
-- Two-way HTTP server (server-initiated `/send` messages to specific players) lives on the `two-way-api-archive` branch, removed from master. Restore from that branch if the use case returns; don't try to reimplement on master from scratch.
-- The `[PicoLimbo] Code sent.` reply is a local add. Upstream has no opinion on chat replies — they treat chat as opaque.
+Upstream changed an API our patches depend on (e.g. renamed a function in
+`pico_text_component` that `commands.rs` calls). Same regeneration loop, but
+you'll need to edit the patched files to match the new API before
+re-exporting.
+
+## Files our patches touch (predictable conflict surface)
+
+| File | Why it might conflict |
+|------|------------------------|
+| `pico_limbo/src/handlers/play/commands.rs` | Upstream may refactor the `ChatMessagePacket` handler. The patch adds an `on_incoming_chat` call and a "Code sent" reply in the non-command branch — re-thread those onto whatever upstream did. |
+| `pico_limbo/src/lib.rs` | Single `pub mod wynn;` line. Conflicts only if upstream reorders module declarations. |
+| `pico_limbo/src/main.rs` | Same. |
+| `pico_limbo/src/wynn.rs` | Pure addition, no upstream version. Conflicts only if upstream creates a file at the same path (extremely unlikely). |
+
+If the patches' surface area grows, that's a signal to think about whether the
+addition is structural enough to upstream. (The natural target would be a
+generic "chat webhook" feature in `server.toml`, which would let us delete the
+overlay entirely and run `ghcr.io/quozul/picolimbo` directly.)
 
 ## Don't
 
-- **Don't squash-merge an upstream merge.** That throws away the upstream commit history and makes the next merge harder. Default merge commit (or `--no-ff`) is correct here.
-- **Don't rebase our master onto upstream.** Same problem — re-writes history that's already pushed.
-- **Don't take the upstream `Dockerfile` blindly without verifying our env vars work.** Upstream may add `ENV` directives we don't want, or remove ones we need. Diff before recreating production.
+- **Don't add upstream code into the repo to "make patching easier."** That defeats the structural purpose. Edit patches by cloning upstream into a scratch dir.
+- **Don't pin to `master` in production.** `PICOLIMBO_REF` should be a tag in production. The nightly smoke build is what runs against `master`.
+- **Don't skip `verify-patches` CI.** A red CI on master is what would silently break the next deploy.

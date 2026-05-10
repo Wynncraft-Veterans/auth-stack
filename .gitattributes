@@ -1,0 +1,8 @@
+# Patches and Dockerfiles MUST stay LF — `git apply` rejects CRLF patches,
+# and the Docker build runs on Linux. Without this, a Windows clone would
+# rewrite patches/*.patch to CRLF on checkout and break the build.
+*.patch text eol=lf
+*.sh    text eol=lf
+Dockerfile text eol=lf
+docker-compose.yml text eol=lf
+*.yml   text eol=lf
