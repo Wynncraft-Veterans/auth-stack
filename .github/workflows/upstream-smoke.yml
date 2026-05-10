@@ -15,6 +15,13 @@ on:
   schedule:
     # 06:00 UTC daily. Quozul releases are infrequent; daily is overkill but
     # cheap, and surfaces breakage within a day of an upstream commit.
+    #
+    # CAVEAT: GitHub disables scheduled workflows after 60 days of zero
+    # repository activity (any push counts). If the smoke goes silent in a
+    # quiet period, push any change to re-enable, or trigger manually via
+    # workflow_dispatch below. If we hit this regularly, move the smoke
+    # to a cron on the deploy host (memory-tight there — see
+    # .claude/upstream-sync.md for the design constraint).
     - cron: "0 6 * * *"
   workflow_dispatch:
     inputs:
