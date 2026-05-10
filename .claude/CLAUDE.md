@@ -1,62 +1,63 @@
 # auth-stack
 
-A fork of [Quozul/PicoLimbo](https://github.com/Quozul/PicoLimbo) (Rust ultra-light Minecraft limbo server) with a single, narrow modification: every chat line a player types is forwarded to a remote HTTP endpoint, used by dazebot to consume Minecraft-account link codes.
+Patch overlay over [Quozul/PicoLimbo](https://github.com/Quozul/PicoLimbo) (Rust ultra-light Minecraft limbo server) that adds chat-line forwarding to dazebot for Minecraft account-link verification.
 
 ## Key facts
 
 - **Production address:** `verify.wynnvets.org:25565` (Minecraft TCP)
-- **Stack:** Rust workspace (multi-crate). The actual binary is `pico_limbo`.
-- **Ancestry:** upstream `Quozul/PicoLimbo` → fork `PierreV23/wynnvetserver` → this fork `Wynncraft-Veterans/auth-stack` (the rename happened to make the verification purpose obvious).
-- **Why this fork exists:** Upstream has no chat-forwarding mechanism; that's what dazebot's link flow needs.
+- **Shape:** Two patches under [patches/](../patches/) applied to a fresh clone of `Quozul/PicoLimbo` at build time. No upstream code lives in this repo.
+- **Build:** [docker/Dockerfile](../docker/Dockerfile) clones upstream at `PICOLIMBO_REF` (default = pinned tag), applies patches, builds the `pico_limbo` binary into a distroless image.
+- **Why this overlay exists:** Upstream has no chat-forwarding mechanism; dazebot's link flow needs every chat line GET'd to its `/api/auth` endpoint.
 
 ## Related repos (same workspace)
 
-- `../dazebot` — Receives the chat-line forwards at `GET /api/auth/{uuid}/{msg}` and looks for `LinkCode` matches. **This is the only consumer of auth-stack's HTTP forwarding.**
-- `../vets-deploy` — Compose stack at `stacks/picolimbo/` runs this image (built locally from a sibling clone).
-- `../vetsmod` — Indirect relationship: vetsmod users are Discord-linked via the auth-stack→dazebot chain *before* they ever run `/vetsmod` to get a vetsmod auth key. Two distinct auth flows that happen to share dazebot's `/api/auth/` HTTP prefix.
+- `../dazebot` — Receives the chat-line forwards at `GET /api/auth/{uuid}/{msg}` and looks for `LinkCode` matches. **The only consumer of auth-stack's HTTP forwarding.**
+- `../vets-deploy` — Compose stack at `stacks/picolimbo/` runs the image (built locally from a sibling clone of *this* repo, which then clones upstream during the Docker build).
+- `../vetsmod` — Indirect: vetsmod users are Discord-linked via the auth-stack→dazebot chain *before* they ever run `/vetsmod` to get a vetsmod auth key. Two distinct auth flows that happen to share dazebot's `/api/auth/` HTTP prefix.
 - `../temporary-server` — Unrelated.
 
 ## Where the modification lives
 
-| File | What it does |
-|------|--------------|
-| [pico_limbo/src/wynn.rs](../pico_limbo/src/wynn.rs) | `REMOTE_API_URL` env var (defaults to `http://localhost:9421/api/auth`) and the helper that GETs `{REMOTE_API_URL}/{uuid}/{msg}` for each chat line. |
-| [pico_limbo/src/handlers/play/commands.rs](../pico_limbo/src/handlers/play/commands.rs) | The `ChatMessagePacket` handler that fires `wynn::on_incoming_chat()` and replies in-game with `[PicoLimbo] Code sent.` so the player has visible feedback that their message was forwarded. |
+| Patch | What it does |
+|-------|--------------|
+| [patches/0001-add-wynn-chat-forward-module.patch](../patches/0001-add-wynn-chat-forward-module.patch) | Creates `pico_limbo/src/wynn.rs` with `REMOTE_API_URL` env var (default `http://localhost:9421/api/auth`) and the helper that GETs `{REMOTE_API_URL}/{uuid}/{msg}` for each chat line. |
+| [patches/0002-wire-chat-forward-into-handler.patch](../patches/0002-wire-chat-forward-into-handler.patch) | Wires `wynn::on_incoming_chat` into the `ChatMessagePacket` handler and replies in-game with `[PicoLimbo] Code sent.` so the player has visible feedback. |
 
 The path suffix `/api/auth` reflects what dazebot does with the data, not what PicoLimbo does. Don't rename it without coordinating with `../dazebot/api/main.py` (the receiver).
 
-The "code sent" reply is intentionally only a transmission ack — dazebot's accept/reject outcome is asynchronous and not surfaced back through PicoLimbo (the legacy two-way registry was archived in the `two-way-api-archive` branch; restore from there if you ever need server-push chat).
+The "code sent" reply is intentionally only a transmission ack — dazebot's accept/reject outcome is asynchronous and not surfaced back through PicoLimbo. The legacy two-way HTTP server (server-initiated `/send` to specific players) lives on the `two-way-api-archive` branch; restore from there if server-push chat is ever needed.
 
 ## Build / deploy
 
-- **Local:** `cargo build --release -p pico_limbo` (toolchain pinned in `rust-toolchain.toml`).
-- **Container:** `docker/Dockerfile` is the build context the vets-deploy stack uses. The Docker build context **must** include `pico_libraries/` (recently fixed — see commit `ffc3e46`); upstream registry data lives there.
-- **Production:**
-  ```bash
-  cd /opt/docker/picolimbo/src
-  git pull
-  manage update picolimbo
-  ```
+- **Local:** `docker build -t picolimbo:local -f docker/Dockerfile .` (or `docker compose up --build`).
+- **Pin a different upstream ref:** `docker build --build-arg PICOLIMBO_REF=v1.13.0 ...` or edit the default in `docker/Dockerfile`.
+- **Production:** `cd /opt/docker/picolimbo/src && git pull && manage update picolimbo`. Image is rebuilt by compose using the bumped `PICOLIMBO_REF` (pinned in `vets-deploy/stacks/picolimbo/.env`).
 
 ## Tracking upstream
 
-This fork keeps in sync with `Quozul/PicoLimbo`. The most recent merge brought the workspace to **v1.12.2+mc26.1.2** (support for MC 26.1.x clients via the new `pico_nbt` / `pico_registries` / `identifier` crates, dialog registry, transfer packets, etc.). Don't edit the upstream-owned crates (`crates/*`, `pico_libraries/*`) unless you intend to maintain a permanent divergence — every conflict you create is a tax on the next merge.
+There is no manual git merge. To upgrade:
 
-Concrete merge guide with conflict rules: [upstream-sync.md](upstream-sync.md).
+1. Pick an upstream ref (tag preferred — see `https://github.com/Quozul/PicoLimbo/releases`).
+2. Edit `PICOLIMBO_REF` default in [docker/Dockerfile](../docker/Dockerfile) (or `.env` for vets-deploy).
+3. Open a PR; `verify-patches` CI builds against the new ref.
+4. If `git apply` fails, regenerate the affected patch — see [upstream-sync.md](upstream-sync.md).
+
+The `upstream-smoke` GitHub Action rebuilds nightly against `PICOLIMBO_REF=master`. A red run is the early-warning that an upstream change has broken our patches; you have time to react before the next planned upgrade.
 
 ## Configuration
 
-[server.toml](../server.toml) — bind address, MOTD, default game-mode, etc. The fork keeps upstream PicoLimbo's config schema intact; the only added knob is the `REMOTE_API_URL` env var read at runtime.
-
-In production, `REMOTE_API_URL` is typically set to `http://dazebot:${DAZEBOT_PORT}/api/auth` (resolvable on the `verify` Docker network).
+- `REMOTE_API_URL` env var — read by [pico_limbo/src/wynn.rs](../patches/0001-add-wynn-chat-forward-module.patch) at startup. In production, `http://dazebot:${DAZEBOT_PORT}/api/auth` (resolvable on the `verify` Docker network).
+- [server.toml](../server.toml) — starter template. The *live* server.toml lives in `vets-deploy/stacks/picolimbo/server.toml` and is mounted RO into the container.
 
 ## Don't
 
-- Don't switch to the upstream `ghcr.io/quozul/picolimbo` image — it has no chat forwarding and link codes will silently never resolve.
+- Don't add upstream PicoLimbo code (`crates/`, `pico_libraries/`, `pico_limbo/`, etc.) into this repo. The whole structural point is that they live only in upstream.
+- Don't switch to `ghcr.io/quozul/picolimbo` — it has no chat forwarding and link codes will silently never resolve.
 - Don't enable any feature that filters or transforms chat before the forward fires — dazebot needs the raw line.
-- Don't add authentication to the chat forward — it's already gated by Docker network isolation; adding shared-secret headers would force a coordinated change in dazebot too.
+- Don't add authentication to the chat forward — gated by Docker network isolation; adding shared-secret headers would force a coordinated change in dazebot too.
 
 ## What this repo is **not**
 
+- Not a fork (in the git-history sense). It used to be a fork of `PierreV23/wynnvetserver`; that ancestry is now archived. Master is a clean overlay-shape branch.
 - Not a Wynncraft-aware server. PicoLimbo is a literal limbo — players just stand around. The only logic added is the chat-line forward.
 - Not part of the vetsmod auth path. That uses dazebot's separate `POST /api/auth/introspect` endpoint and never touches PicoLimbo.

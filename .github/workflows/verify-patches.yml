@@ -1,0 +1,32 @@
+# PR/push gate: build the patch overlay against the pinned PICOLIMBO_REF.
+# This catches patch-application breakage and compile errors at PR time,
+# before they hit master.
+#
+# Uses the same Dockerfile + default ref the production build uses, so a
+# green run here means the production deploy will succeed.
+name: verify-patches
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build against pinned upstream ref
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: false
+          load: true
+          tags: picolimbo:verify
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

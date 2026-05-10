@@ -1,10 +1,18 @@
+# Local-dev compose: build and run the patched picolimbo against an
+# arbitrary upstream ref. NOT used in production — vets-deploy's
+# stacks/picolimbo/docker-compose.yml is what runs on the VPS.
 services:
-  pico-limbo:
+  picolimbo:
     build:
       context: .
       dockerfile: docker/Dockerfile
       args:
-        BINARY_NAME: pico_limbo
-    image: ghcr.io/quozul/picolimbo:latest
+        PICOLIMBO_REF: ${PICOLIMBO_REF:-v1.12.2+mc26.1.2}
+    image: picolimbo:local
     ports:
       - "30066:25565"
+    environment:
+      # Point at host's dazebot if you're running it locally.
+      REMOTE_API_URL: ${REMOTE_API_URL:-http://host.docker.internal:9421/api/auth}
+    volumes:
+      - ./server.toml:/usr/src/app/server.toml:ro

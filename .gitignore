@@ -4,16 +4,6 @@
 .DS_Store
 Thumbs.db
 
-# --- Rust build artefacts ---
-/target
-
-# --- Upstream PicoLimbo bits ---
-/data/servers
-/docs/.vitepress/cache
-/docs/.vitepress/dist
-node_modules/
-*.zst
-
 # --- Local scratch ---
 /.temp/
 

@@ -1,0 +1,53 @@
+# Nightly: build the patch overlay against upstream Quozul/PicoLimbo HEAD.
+#
+# Failure signals one of:
+#  - Our patches no longer apply (upstream refactored a file we touch).
+#  - The patched source no longer compiles (upstream API change).
+#  - Upstream's toolchain bumped past what rust:1-alpine ships.
+#
+# When this fails, look at the job log, then either:
+#  - Regenerate the affected patch against current upstream and commit, or
+#  - Pin PICOLIMBO_REF in docker/Dockerfile to the last-good upstream tag
+#    and open an issue to address the divergence on a longer timeline.
+name: upstream-smoke
+
+on:
+  schedule:
+    # 06:00 UTC daily. Quozul releases are infrequent; daily is overkill but
+    # cheap, and surfaces breakage within a day of an upstream commit.
+    #
+    # CAVEAT: GitHub disables scheduled workflows after 60 days of zero
+    # repository activity (any push counts). If the smoke goes silent in a
+    # quiet period, push any change to re-enable, or trigger manually via
+    # workflow_dispatch below. If we hit this regularly, move the smoke
+    # to a cron on the deploy host (memory-tight there — see
+    # .claude/upstream-sync.md for the design constraint).
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Upstream ref to build against (default: master)"
+        required: false
+        default: "master"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build with PICOLIMBO_REF=${{ inputs.ref || 'master' }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: false
+          load: true
+          tags: picolimbo:upstream-smoke
+          build-args: |
+            PICOLIMBO_REF=${{ inputs.ref || 'master' }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

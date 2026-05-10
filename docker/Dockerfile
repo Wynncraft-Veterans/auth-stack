@@ -1,41 +1,73 @@
-# Build this Dockerfile using this command from the repository root:
-# docker build -t picolimbo:latest -f docker/Dockerfile .
+# auth-stack — patch overlay over Quozul/PicoLimbo.
+#
+# This Dockerfile clones a configurable ref of upstream PicoLimbo, applies
+# the patch series in patches/, and builds the resulting pico_limbo binary
+# into a distroless runtime image. The repo holds no upstream code; the
+# build is reproducibly defined by (PICOLIMBO_REF, patches/).
+#
+# Build (default = pinned tag):
+#   docker build -t picolimbo:local -f docker/Dockerfile .
+#
+# Build against upstream HEAD (nightly smoke / opt-in):
+#   docker build --build-arg PICOLIMBO_REF=master \
+#                -t picolimbo:nightly -f docker/Dockerfile .
+#
+# Bump the pinned ref by editing PICOLIMBO_REF below (or pass it from
+# vets-deploy/.env via compose `args`).
 
 # syntax=docker/dockerfile:1.7-labs
-FROM rust:1.95.0-alpine AS builder
 
+ARG PICOLIMBO_REF=v1.12.2+mc26.1.2
+
+# Stage 1: fetch upstream and apply patches.
+# Done in a tiny image so patch-application failure is fast and obvious.
+FROM alpine/git:latest AS source
+ARG PICOLIMBO_REF
+WORKDIR /src
+RUN git clone https://github.com/Quozul/PicoLimbo.git . \
+ && git checkout "${PICOLIMBO_REF}"
+COPY patches/ /patches/
+RUN set -e; \
+    if ls /patches/*.patch >/dev/null 2>&1; then \
+        echo "Applying patches against ${PICOLIMBO_REF}:"; \
+        ls /patches/*.patch; \
+        git apply --check /patches/*.patch; \
+        git apply /patches/*.patch; \
+    else \
+        echo "No patches found in /patches/"; \
+    fi
+
+# Stage 2: build the patched source.
+# rust:1-alpine floats with stable 1.x; the cloned repo's rust-toolchain.toml
+# takes precedence via rustup so we match whatever upstream pins without
+# editing the Dockerfile.
+FROM rust:1-alpine AS builder
 ARG TARGETPLATFORM
 ARG BINARY_NAME=pico_limbo
-
 WORKDIR /usr/src/app
-COPY --parents ./Cargo.toml ./Cargo.lock ./crates ./pico_libraries ./pico_limbo ./data/generated ./
-
+COPY --from=source /src .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/src/app/target \
     apk add --no-cache musl-dev && \
-    case "${TARGETPLATFORM}" in \
+    case "${TARGETPLATFORM:-linux/amd64}" in \
         linux/amd64) TARGET="x86_64-unknown-linux-musl";; \
         linux/arm64) TARGET="aarch64-unknown-linux-musl";; \
         *) echo "Unsupported platform: ${TARGETPLATFORM}"; exit 1;; \
     esac && \
-    rustup target add $TARGET && \
-    cargo build --release --target $TARGET --bin $BINARY_NAME && \
-    cp target/$TARGET/release/$BINARY_NAME /usr/local/bin/pico_limbo
+    rustup target add "$TARGET" && \
+    cargo build --release --target "$TARGET" --bin "$BINARY_NAME" && \
+    cp "target/$TARGET/release/$BINARY_NAME" /usr/local/bin/pico_limbo
 
-FROM alpine AS build-env
-
+# Stage 3: build a tiny scratch dir owned by nonroot so the distroless
+# final image has a writable WORKDIR. Distroless has no shell, so we
+# can't mkdir/chown there; we have to stage the dir and COPY it in.
+FROM alpine AS workdir-stage
 WORKDIR /usr/src/app
-
 RUN touch /usr/src/app/.keep
 
 FROM gcr.io/distroless/static:latest
-
-COPY --from=build-env --chown=nonroot:nonroot /usr/src/app /usr/src/app
-
-WORKDIR /usr/src/app
-
-COPY --from=builder --chown=nonroot:nonroot /usr/local/bin/pico_limbo /usr/local/bin/pico_limbo
-
+COPY --from=workdir-stage --chown=nonroot:nonroot /usr/src/app /usr/src/app
+COPY --from=builder       --chown=nonroot:nonroot /usr/local/bin/pico_limbo /usr/local/bin/pico_limbo
 USER nonroot
-
+WORKDIR /usr/src/app
 CMD ["pico_limbo"]
