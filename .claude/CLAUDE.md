@@ -12,7 +12,7 @@ Patch overlay over [Quozul/PicoLimbo](https://github.com/Quozul/PicoLimbo) (Rust
 ## Related repos (same workspace)
 
 - `../dazebot` — Receives the chat-line forwards at `GET /api/auth/{uuid}/{msg}` and looks for `LinkCode` matches. **The only consumer of auth-stack's HTTP forwarding.**
-- `../vets-deploy` — Compose stack at `stacks/picolimbo/` runs the image (built locally from a sibling clone of *this* repo, which then clones upstream during the Docker build).
+- `../vets-deploy` — Compose stack at `stacks/picolimbo/` pulls `ghcr.io/wynncraft-veterans/auth-stack:<sanitized-ref>` (no longer builds locally; auth-stack CI publishes the image).
 - `../vetsmod` — Indirect: vetsmod users are Discord-linked via the auth-stack→dazebot chain *before* they ever run `/vetsmod` to get a vetsmod auth key. Two distinct auth flows that happen to share dazebot's `/api/auth/` HTTP prefix.
 - `../temporary-server` — Unrelated.
 
@@ -29,20 +29,27 @@ The "code sent" reply is intentionally only a transmission ack — dazebot's acc
 
 ## Build / deploy
 
-- **Local:** `docker build -t picolimbo:local -f docker/Dockerfile .` (or `docker compose up --build`).
-- **Pin a different upstream ref:** `docker build --build-arg PICOLIMBO_REF=v1.13.0 ...` or edit the default in `docker/Dockerfile`.
-- **Production:** `cd /opt/docker/picolimbo/src && git pull && manage update picolimbo`. Image is rebuilt by compose using the bumped `PICOLIMBO_REF` (pinned in `vets-deploy/stacks/picolimbo/.env`).
+- **Local:** `docker build -t picolimbo:local -f docker/Dockerfile .`.
+- **Pin a different upstream ref locally:** `docker build --build-arg PICOLIMBO_REF=v1.13.0 ...` or edit the default in `docker/Dockerfile`.
+- **Production:** No host-side build. `verify-patches` CI publishes
+  `ghcr.io/wynncraft-veterans/auth-stack:<sanitized-ref>` on every master
+  push. The VPS pulls it via `manage update auth-stack` (alias for
+  `picolimbo`), and Watchtower also picks up republishes nightly at 04:00.
+- **Tag sanitization:** OCI tags can't contain `+`, so upstream
+  `v1.12.2+mc26.1.2` is published as `v1.12.2-mc26.1.2`. `IMAGE_TAG` in
+  vets-deploy's `.env` is the sanitized form.
 
 ## Tracking upstream
 
 There is no manual git merge. To upgrade:
 
 1. Pick an upstream ref (tag preferred — see `https://github.com/Quozul/PicoLimbo/releases`).
-2. Edit `PICOLIMBO_REF` default in [docker/Dockerfile](../docker/Dockerfile) (or `.env` for vets-deploy).
-3. Open a PR; `verify-patches` CI builds against the new ref.
-4. If `git apply` fails, regenerate the affected patch — see [upstream-sync.md](upstream-sync.md).
+2. Edit `PICOLIMBO_REF` default in [docker/Dockerfile](../docker/Dockerfile).
+3. Open a PR; `verify-patches` CI builds against the new ref. On merge to master, the same workflow pushes `ghcr.io/wynncraft-veterans/auth-stack:<sanitized-ref>` (e.g. `v1.13.0-mc26.2.0`).
+4. Bump `IMAGE_TAG` in `vets-deploy/stacks/picolimbo/.env` to the sanitized form, commit, push. On the VPS: `manage sync && manage update auth-stack` (or wait for the next Watchtower sweep — but only after the `.env` bump, since the tag changed).
+5. If `git apply` fails at step 3, regenerate the affected patch — see [upstream-sync.md](upstream-sync.md).
 
-The `upstream-smoke` GitHub Action rebuilds nightly against `PICOLIMBO_REF=master`. A red run is the early-warning that an upstream change has broken our patches; you have time to react before the next planned upgrade.
+The `upstream-smoke` GitHub Action rebuilds nightly against `PICOLIMBO_REF=master` and does **not** push (smoke only). A red run is the early-warning that an upstream change has broken our patches; you have time to react before the next planned upgrade.
 
 ## Configuration
 

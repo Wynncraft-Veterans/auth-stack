@@ -23,8 +23,8 @@ The repo is a patch overlay, not a fork. There is no `git merge upstream/master`
    ```bash
    docker build -t picolimbo:test -f docker/Dockerfile .
    ```
-4. If the build succeeds → open a PR, `verify-patches` CI gates it, merge.
-5. Update vets-deploy `.env` if it overrides `PICOLIMBO_REF`, then redeploy.
+4. If the build succeeds → open a PR, `verify-patches` CI gates it, merge. On merge the same workflow pushes the new `:<sanitized-ref>` image to GHCR (OCI tags can't contain `+`, so `v1.13.0+mc26.2.0` → `:v1.13.0-mc26.2.0`).
+5. Bump `IMAGE_TAG` in `vets-deploy/stacks/picolimbo/.env` to the sanitized form, commit, push. On the VPS: `manage sync && manage update auth-stack`.
 
 ## When `git apply` fails
 
