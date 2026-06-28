@@ -1,0 +1,105 @@
+# Track upstream Quozul/PicoLimbo automatically.
+#
+# This workflow is the single CI gate for auth-stack. It resolves a target
+# upstream ref (latest release tag by default), builds our patch overlay
+# against it, and on master/schedule publishes two image tags to GHCR:
+#
+#   ghcr.io/wynncraft-veterans/auth-stack:<sanitized-ref>   (immutable, audit)
+#   ghcr.io/wynncraft-veterans/auth-stack:rolling           (mutable, deploy)
+#
+# The vets-deploy picolimbo stack pulls `:rolling`. Watchtower picks up
+# new digests nightly, so a successful run on the daily schedule lands a
+# new upstream release within ~24h with no human in the loop.
+#
+# Failure handling is automatic and stateless:
+#  - Build fails  -> no push  -> `:rolling` keeps its previous digest.
+#  - GHCR is the last-known-good record; no separate state file.
+#
+# For manual rollback to a specific :<sanitized-ref>, use on the VPS:
+#   manage pin auth-stack v1.12.2-mc26.1.2
+#
+# To resume auto-tracking after a manual pin:
+#   manage pin auth-stack rolling
+
+name: upstream-track
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  schedule:
+    # 06:00 UTC daily. GitHub disables scheduled workflows after 60 days
+    # of zero repo activity; the push trigger above keeps it warm whenever
+    # we land a patch change.
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Upstream ref to build (default: latest release tag)"
+        required: false
+        default: ""
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve target upstream ref
+        id: resolve
+        env:
+          INPUT_REF: ${{ inputs.ref }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -n "${INPUT_REF}" ]; then
+            ref="${INPUT_REF}"
+            echo "Using workflow_dispatch ref: ${ref}"
+          else
+            # Public repo; GITHUB_TOKEN auth is optional but avoids the
+            # 60/hr unauthenticated rate limit on shared runners.
+            ref=$(curl -fsSL \
+                    -H "Accept: application/vnd.github+json" \
+                    -H "Authorization: Bearer ${GH_TOKEN}" \
+                    https://api.github.com/repos/Quozul/PicoLimbo/releases/latest \
+                  | jq -r .tag_name)
+            if [ -z "${ref}" ] || [ "${ref}" = "null" ]; then
+              echo "GitHub API returned no tag_name; falling back to Dockerfile default."
+              ref=$(awk -F'=' '/^ARG PICOLIMBO_REF=/{print $2; exit}' docker/Dockerfile)
+            fi
+            echo "Resolved latest upstream tag: ${ref}"
+          fi
+          tag=${ref//+/-}
+          echo "ref=${ref}"  >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}"  >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build (and push on master/schedule/dispatch)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: ${{ github.event_name != 'pull_request' }}
+          load: ${{ github.event_name == 'pull_request' }}
+          build-args: |
+            PICOLIMBO_REF=${{ steps.resolve.outputs.ref }}
+          labels: |
+            org.wynnvets.upstream-ref=${{ steps.resolve.outputs.ref }}
+          tags: |
+            ghcr.io/wynncraft-veterans/auth-stack:${{ steps.resolve.outputs.tag }}
+            ghcr.io/wynncraft-veterans/auth-stack:rolling
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

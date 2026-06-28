@@ -30,26 +30,28 @@ The "code sent" reply is intentionally only a transmission ack — dazebot's acc
 ## Build / deploy
 
 - **Local:** `docker build -t picolimbo:local -f docker/Dockerfile .`.
-- **Pin a different upstream ref locally:** `docker build --build-arg PICOLIMBO_REF=v1.13.0 ...` or edit the default in `docker/Dockerfile`.
-- **Production:** No host-side build. `verify-patches` CI publishes
-  `ghcr.io/wynncraft-veterans/auth-stack:<sanitized-ref>` on every master
-  push. The VPS pulls it via `manage update auth-stack` (alias for
-  `picolimbo`), and Watchtower also picks up republishes nightly at 04:00.
-- **Tag sanitization:** OCI tags can't contain `+`, so upstream
-  `v1.12.2+mc26.1.2` is published as `v1.12.2-mc26.1.2`. `IMAGE_TAG` in
-  vets-deploy's `.env` is the sanitized form.
+- **Pin a different upstream ref locally:** `docker build --build-arg PICOLIMBO_REF=v1.13.1+mc26.2 ...` or edit the fallback default in `docker/Dockerfile`.
+- **Production:** No host-side build. `upstream-track` CI resolves the latest upstream release tag from the GitHub API, builds, and publishes two tags on every master push / daily schedule:
+  - `ghcr.io/wynncraft-veterans/auth-stack:<sanitized-ref>` — immutable, audit trail (e.g. `v1.13.1-mc26.2`).
+  - `ghcr.io/wynncraft-veterans/auth-stack:rolling` — mutable, what vets-deploy's `IMAGE_TAG` points at by default. Watchtower picks up the new digest within ~24h.
+- **Tag sanitization:** OCI tags can't contain `+`, so upstream `v1.12.2+mc26.1.2` is published as `v1.12.2-mc26.1.2`.
 
 ## Tracking upstream
 
-There is no manual git merge. To upgrade:
+Automatic. The `upstream-track` workflow runs daily at 06:00 UTC (and on every master push), queries `https://api.github.com/repos/Quozul/PicoLimbo/releases/latest`, and rebuilds against that tag. On a green build, both `:<sanitized-ref>` and `:rolling` are pushed. On a red build, **nothing** is pushed — `:rolling` keeps its previous digest, which is the implicit last-known-good state. GHCR is the state store; there is no separate tracking file.
 
-1. Pick an upstream ref (tag preferred — see `https://github.com/Quozul/PicoLimbo/releases`).
-2. Edit `PICOLIMBO_REF` default in [docker/Dockerfile](../docker/Dockerfile).
-3. Open a PR; `verify-patches` CI builds against the new ref. On merge to master, the same workflow pushes `ghcr.io/wynncraft-veterans/auth-stack:<sanitized-ref>` (e.g. `v1.13.0-mc26.2.0`).
-4. Bump `IMAGE_TAG` in `vets-deploy/stacks/picolimbo/.env` to the sanitized form, commit, push. On the VPS: `manage sync && manage update auth-stack` (or wait for the next Watchtower sweep — but only after the `.env` bump, since the tag changed).
-5. If `git apply` fails at step 3, regenerate the affected patch — see [upstream-sync.md](upstream-sync.md).
+When a build goes red:
+- Inspect the failed `upstream-track` run. If `git apply` failed or compile failed, regenerate the affected patch — see [upstream-sync.md](upstream-sync.md).
+- Production keeps running on the previous `:rolling` digest in the meantime; there's no urgent rollback needed.
 
-The `upstream-smoke` GitHub Action rebuilds nightly against `PICOLIMBO_REF=master` and does **not** push (smoke only). A red run is the early-warning that an upstream change has broken our patches; you have time to react before the next planned upgrade.
+When you need to manually pin (e.g. `:rolling` shipped a runtime-bad image before it was caught):
+```
+manage pin auth-stack v1.12.2-mc26.1.2     # pin to a specific known-good sanitized tag
+manage pin auth-stack rolling              # resume auto-tracking
+```
+`manage pin` lives in vets-deploy's `scripts/manage.sh`. It writes `IMAGE_TAG` into the stack's `.env` and runs `docker compose pull && up -d`.
+
+The `ARG PICOLIMBO_REF` default in [docker/Dockerfile](../docker/Dockerfile) is only used as the last-resort fallback when the GitHub API call fails AND for plain `docker build` invocations without `--build-arg`. CI overrides it on every run, so don't expect bumping it to change what production runs.
 
 ## Configuration
 

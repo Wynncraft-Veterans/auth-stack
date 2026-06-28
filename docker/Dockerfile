@@ -5,15 +5,18 @@
 # into a distroless runtime image. The repo holds no upstream code; the
 # build is reproducibly defined by (PICOLIMBO_REF, patches/).
 #
-# Build (default = pinned tag):
+# Build (local default = the last-known-good fallback below):
 #   docker build -t picolimbo:local -f docker/Dockerfile .
 #
-# Build against upstream HEAD (nightly smoke / opt-in):
-#   docker build --build-arg PICOLIMBO_REF=master \
-#                -t picolimbo:nightly -f docker/Dockerfile .
+# Build against a specific upstream ref:
+#   docker build --build-arg PICOLIMBO_REF=v1.13.1+mc26.2 \
+#                -t picolimbo:test -f docker/Dockerfile .
 #
-# Bump the pinned ref by editing PICOLIMBO_REF below (or pass it from
-# vets-deploy/.env via compose `args`).
+# In CI, .github/workflows/upstream-track.yml overrides PICOLIMBO_REF
+# with the latest upstream release tag (queried from the GitHub API on
+# every schedule/push). The ARG below is only used as the fallback when
+# that API call fails AND when you build locally without --build-arg.
+# Keep it pointing at a ref that's known to apply cleanly.
 
 # syntax=docker/dockerfile:1.7-labs
 
