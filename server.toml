@@ -5,9 +5,13 @@ default_game_mode = "spectator"
 hardcore = false
 fetch_player_skins = false
 reduced_debug_info = false
-allow_unsupported_versions = true
-allow_flight = false
 accept_transfers = false
+
+[connection]
+allow_unsupported_versions = true
+
+[fly]
+allow_flight = false
 
 [forwarding]
 method = "NONE"
