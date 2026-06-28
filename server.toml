@@ -9,9 +9,12 @@ accept_transfers = false
 
 [connection]
 allow_unsupported_versions = true
+keep_alive_interval_seconds = 15
 
 [fly]
 allow_flight = false
+flying = false
+flying_speed = 0.05
 
 [forwarding]
 method = "NONE"
