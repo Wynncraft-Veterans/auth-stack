@@ -33,9 +33,16 @@ COPY patches/ /patches/
 RUN set -e; \
     if ls /patches/*.patch >/dev/null 2>&1; then \
         echo "Applying patches against ${PICOLIMBO_REF}:"; \
-        ls /patches/*.patch; \
-        git apply --check /patches/*.patch; \
-        git apply /patches/*.patch; \
+        # Apply one at a time — `git apply` with multiple files (or a \
+        # glob) validates each patch against the *pristine* tree, not \
+        # cumulatively, which breaks the moment two patches touch the \
+        # same file. The loop advances state between patches so later \
+        # ones see the intermediate tree they were regenerated against. \
+        for patch in /patches/*.patch; do \
+            echo "  -> $(basename "$patch")"; \
+            git apply --check "$patch"; \
+            git apply "$patch"; \
+        done; \
     else \
         echo "No patches found in /patches/"; \
     fi
