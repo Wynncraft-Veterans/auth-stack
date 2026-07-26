@@ -1,0 +1,169 @@
+diff --git a/pico_limbo/src/handlers/play/commands.rs b/pico_limbo/src/handlers/play/commands.rs
+index b0c1cf4..43a7279 100644
+--- a/pico_limbo/src/handlers/play/commands.rs
++++ b/pico_limbo/src/handlers/play/commands.rs
+@@ -37,18 +37,24 @@ impl PacketHandler for ChatMessagePacket {
+             run_command(client_state, server_state, command, &mut batch);
+         } else {
+             info!("<{}> {}", client_state.get_username(), self.get_message());
+-            crate::wynn::on_incoming_chat(
++            let kick_message = crate::wynn::on_incoming_chat(
+                 client_state.get_unique_id(),
+                 self.get_message().to_string(),
+             );
+-            // Acknowledge the chat line so the player has visible feedback
+-            // that their message (typically an account-link code) was
+-            // forwarded. dazebot's response is asynchronous and isn't
+-            // surfaced here, so we only confirm transmission, not the
+-            // accept/reject outcome.
+-            if let Ok(component) =
++            if let Some(reason) = kick_message {
++                // A routed backend (e.g. hall-monitor) told us to
++                // disconnect this player. process_packet checks
++                // client_state.should_kick() right after this handler
++                // returns and sends the actual Disconnect packet, so we
++                // just record the intent here.
++                client_state.kick(&reason);
++            } else if let Ok(component) =
+                 parse_mini_message("<gray>[PicoLimbo]</gray> <green>Code sent.</green>")
+             {
++                // No kick_message: the matched backend silently accepted
++                // (dazebot's link probe drops non-link lines) or no route
++                // matched at all. Ack the transmission so the player has
++                // visible feedback.
+                 send_message(&mut batch, &component, client_state.protocol_version());
+             }
+         }
+diff --git a/pico_limbo/src/wynn.rs b/pico_limbo/src/wynn.rs
+index c76bdac..eae7411 100644
+--- a/pico_limbo/src/wynn.rs
++++ b/pico_limbo/src/wynn.rs
+@@ -1,3 +1,5 @@
++use tokio::runtime::Handle;
++use tokio::task::block_in_place;
+ use uuid::Uuid;
+ 
+ use std::env;
+@@ -5,27 +7,102 @@ use std::sync::LazyLock;
+ 
+ // configuration
+ //
+-// REMOTE_API_URL is the base URL that every in-game chat line is GET'd against
+-// as `{REMOTE_API_URL}/{uuid}/{msg}`. The receiving service is *not* a chat
+-// bridge — it is dazebot's account-link probe, which only acts on messages
+-// containing an active link code and silently drops everything else. The
+-// path suffix `/api/auth` reflects that purpose. Override with the env var
+-// when running against a non-default deployment.
++// WYNN_CHAT_ROUTES is a comma-separated list of `<prefix>=<url>` entries.
++// The first entry whose prefix case-insensitively matches the start of the
++// chat line wins; the prefix is stripped before forwarding. An entry with
++// an empty prefix (`=<url>`) is the default fallback and matches anything.
++// Longer prefixes are tried first so a specific prefix always beats the
++// default.
+ //
+-// The reverse direction (server-initiated chat to a specific player via an
+-// HTTP `/send` endpoint and an in-process registry) lived here historically;
+-// it has been moved to the `two-way-api-archive` branch and removed from
+-// master because dazebot does not consume it. Restore from that branch if
+-// you need server-push chat in the future.
+-static REMOTE_API_URL: LazyLock<String> = LazyLock::new(|| {
+-    env::var("REMOTE_API_URL").unwrap_or_else(|_| "http://localhost:9421/api/auth".to_string())
++// Backwards-compat: if WYNN_CHAT_ROUTES is unset but REMOTE_API_URL is,
++// treat REMOTE_API_URL as a single default-only route so existing single-
++// backend deployments (dazebot only) keep working without touching env.
++//
++// The forward is `GET {url}/{uuid}/{stripped-msg}` and the response body
++// is parsed as JSON: a non-empty `kick_message` disconnects the player
++// with that text. Failures (network, non-2xx, missing/empty field) are
++// silent -- the chat line is dropped and the player stays connected.
++static ROUTES: LazyLock<Vec<Route>> = LazyLock::new(|| {
++    let raw = env::var("WYNN_CHAT_ROUTES").ok().unwrap_or_else(|| {
++        env::var("REMOTE_API_URL")
++            .map(|url| format!("={url}"))
++            .unwrap_or_else(|_| "=http://localhost:9421/api/auth".to_string())
++    });
++    let mut routes: Vec<Route> = raw
++        .split(',')
++        .filter_map(|entry| {
++            let (prefix, url) = entry.split_once('=')?;
++            let url = url.trim();
++            if url.is_empty() {
++                return None;
++            }
++            Some(Route {
++                prefix_lower: prefix.to_lowercase(),
++                prefix_len: prefix.len(),
++                base_url: url.to_string(),
++            })
++        })
++        .collect();
++    // Longest prefix first so `hall ` (specific) beats `` (default).
++    routes.sort_by(|a, b| b.prefix_len.cmp(&a.prefix_len));
++    routes
+ });
+ 
+-// fires when a player sends a message in the minecraft chat
+-pub fn on_incoming_chat(uuid: Uuid, msg: String) {
+-    tokio::spawn(async move {
+-        let base_url = &*REMOTE_API_URL;
+-        let url = format!("{base_url}/{uuid}/{msg}");
+-        let _ = reqwest::get(&url).await;
+-    });
++struct Route {
++    prefix_lower: String,
++    prefix_len: usize,
++    base_url: String,
++}
++
++fn match_route(msg: &str) -> Option<(&'static Route, String)> {
++    let msg_lower = msg.to_lowercase();
++    for route in &*ROUTES {
++        if route.prefix_len == 0 {
++            return Some((route, msg.to_string()));
++        }
++        if msg_lower.starts_with(&route.prefix_lower) {
++            let stripped = msg[route.prefix_len..].trim_start().to_string();
++            return Some((route, stripped));
++        }
++    }
++    None
++}
++
++// fires when a player sends a message in the minecraft chat.
++//
++// Returns `Some(kick_message)` when the matched backend answered with a
++// non-empty `kick_message` field, `None` otherwise. The caller should
++// disconnect the player via `client_state.kick(...)` on `Some`.
++//
++// Runs the HTTP call synchronously so the caller can act on the result.
++// `PacketHandler::handle` is a sync trait method, so we hand off the
++// current worker via `block_in_place` + `Handle::current().block_on(...)`
++// -- safe on tokio's default multi-threaded runtime (see `#[tokio::main]`
++// in `main.rs`).
++pub fn on_incoming_chat(uuid: Uuid, msg: String) -> Option<String> {
++    let (route, forwarded) = match_route(&msg)?;
++    let url = build_url(&route.base_url, uuid, &forwarded)?;
++    block_in_place(|| Handle::current().block_on(async move { fetch_kick(&url).await }))
++}
++
++fn build_url(base: &str, uuid: Uuid, msg: &str) -> Option<reqwest::Url> {
++    let mut url = reqwest::Url::parse(base).ok()?;
++    {
++        let mut segments = url.path_segments_mut().ok()?;
++        segments.push(&uuid.to_string());
++        segments.push(msg);
++    }
++    Some(url)
++}
++
++async fn fetch_kick(url: &reqwest::Url) -> Option<String> {
++    let response = reqwest::get(url.clone()).await.ok()?;
++    if !response.status().is_success() {
++        return None;
++    }
++    let body: serde_json::Value = response.json().await.ok()?;
++    body.get("kick_message")
++        .and_then(|v| v.as_str())
++        .filter(|s| !s.is_empty())
++        .map(String::from)
+ }
