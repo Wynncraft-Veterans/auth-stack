@@ -20,7 +20,7 @@
 
 # syntax=docker/dockerfile:1.7-labs
 
-ARG PICOLIMBO_REF=v1.12.2+mc26.1.2
+ARG PICOLIMBO_REF=v1.13.2+mc26.2
 
 # Stage 1: fetch upstream and apply patches.
 # Done in a tiny image so patch-application failure is fast and obvious.

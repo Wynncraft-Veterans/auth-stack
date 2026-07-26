@@ -1,5 +1,5 @@
 diff --git a/pico_limbo/src/handlers/play/commands.rs b/pico_limbo/src/handlers/play/commands.rs
-index 8ce6fb1..b0c1cf4 100644
+index 728f7c3..f87c51e 100644
 --- a/pico_limbo/src/handlers/play/commands.rs
 +++ b/pico_limbo/src/handlers/play/commands.rs
 @@ -1,3 +1,4 @@
@@ -15,10 +15,12 @@ index 8ce6fb1..b0c1cf4 100644
  use thiserror::Error;
  use tracing::{info, warn};
  
-@@ -35,6 +37,20 @@ impl PacketHandler for ChatMessagePacket {
+@@ -33,6 +35,22 @@ impl PacketHandler for ChatMessagePacket {
+         let mut batch = Batch::new();
+         if let Some(command) = self.get_command() {
              run_command(client_state, server_state, command, &mut batch);
-         } else {
-             info!("<{}> {}", client_state.get_username(), self.get_message());
++        } else {
++            info!("<{}> {}", client_state.get_username(), self.get_message());
 +            crate::wynn::on_incoming_chat(
 +                client_state.get_unique_id(),
 +                self.get_message().to_string(),
@@ -37,10 +39,10 @@ index 8ce6fb1..b0c1cf4 100644
          Ok(batch)
      }
 diff --git a/pico_limbo/src/lib.rs b/pico_limbo/src/lib.rs
-index 772e255..681b510 100644
+index 082e945..1696993 100644
 --- a/pico_limbo/src/lib.rs
 +++ b/pico_limbo/src/lib.rs
-@@ -6,6 +6,7 @@ mod kick_messages;
+@@ -7,6 +7,7 @@ mod kick_messages;
  mod server;
  mod server_brand;
  mod server_state;
@@ -49,10 +51,10 @@ index 772e255..681b510 100644
  use crate::cli::Cli;
  use clap::Parser;
 diff --git a/pico_limbo/src/main.rs b/pico_limbo/src/main.rs
-index 084ff52..ab5744a 100644
+index 93a877c..80c59e8 100644
 --- a/pico_limbo/src/main.rs
 +++ b/pico_limbo/src/main.rs
-@@ -7,6 +7,7 @@ mod kick_messages;
+@@ -8,6 +8,7 @@ mod kick_messages;
  mod server;
  mod server_brand;
  mod server_state;
