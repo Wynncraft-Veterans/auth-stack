@@ -50,7 +50,7 @@ docker build -t picolimbo:local -f docker/Dockerfile .
 docker run --rm -p 25565:25565 -e REMOTE_API_URL=http://host.docker.internal:9421/api/auth picolimbo:local
 # Multi-backend (prefix-routed; blank prefix = default):
 docker run --rm -p 25565:25565 \
-  -e WYNN_CHAT_ROUTES='=http://host.docker.internal:9421/api/auth,hall =http://host.docker.internal:9423/api/verify' \
+  -e WYNN_CHAT_ROUTES='=http://host.docker.internal:9421/api/auth,hall=http://host.docker.internal:9423/api/verify' \
   picolimbo:local
 ```
 

@@ -56,7 +56,7 @@ The `ARG PICOLIMBO_REF` default in [docker/Dockerfile](../docker/Dockerfile) is 
 
 ## Configuration
 
-- `WYNN_CHAT_ROUTES` env var — comma-separated `<prefix>=<url>` list read by `pico_limbo/src/wynn.rs` at startup. Longest prefix wins, blank prefix = default backend. Production value (in `vets-deploy/stacks/picolimbo/.env`) is `=http://dazebot:${DAZEBOT_PORT}/api/auth,hall =http://hall-monitor:9423/api/verify` — dazebot's link probe still receives every unmatched line; `hall ` prefix routes to Hall-Monitor's verify endpoint.
+- `WYNN_CHAT_ROUTES` env var — comma-separated `<prefix>=<url>` list read by `pico_limbo/src/wynn.rs` at startup. Longest prefix wins, blank prefix = default backend. Production value (in `vets-deploy/stacks/picolimbo/.env`) is `=http://dazebot:${DAZEBOT_PORT}/api/auth,hall=http://hall-monitor:9423/api/verify` — dazebot's link probe still receives every unmatched line; the `hall` prefix routes to Hall-Monitor's verify endpoint. No trailing space: representatives type a single-token `HALL<NN>` code, and the prefix is stripped before forwarding so hall-monitor sees the bare digits.
 - `REMOTE_API_URL` env var — legacy single-backend var, still honoured as a default-only route when `WYNN_CHAT_ROUTES` is unset. Prefer setting `WYNN_CHAT_ROUTES` even for single-backend deployments so intent is explicit.
 - [server.toml](../server.toml) — starter template. The *live* server.toml lives in `vets-deploy/stacks/picolimbo/server.toml` and is mounted RO into the container.
 
