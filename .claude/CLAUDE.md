@@ -5,7 +5,7 @@ Patch overlay over [Quozul/PicoLimbo](https://github.com/Quozul/PicoLimbo) (Rust
 ## Key facts
 
 - **Production address:** `verify.wynnvets.org:25565` (Minecraft TCP)
-- **Shape:** Two patches under [patches/](../patches/) applied to a fresh clone of `Quozul/PicoLimbo` at build time. No upstream code lives in this repo.
+- **Shape:** Three patches under [patches/](../patches/) applied to a fresh clone of `Quozul/PicoLimbo` at build time. No upstream code lives in this repo.
 - **Build:** [docker/Dockerfile](../docker/Dockerfile) clones upstream at `PICOLIMBO_REF` (default = pinned tag), applies patches, builds the `pico_limbo` binary into a distroless image.
 - **Why this overlay exists:** Upstream has no chat-forwarding mechanism; dazebot's link flow needs every chat line GET'd to its `/api/auth` endpoint.
 
@@ -22,6 +22,7 @@ Patch overlay over [Quozul/PicoLimbo](https://github.com/Quozul/PicoLimbo) (Rust
 |-------|--------------|
 | [patches/0001-add-wynn-chat-forward-module.patch](../patches/0001-add-wynn-chat-forward-module.patch) | Creates `pico_limbo/src/wynn.rs` with `REMOTE_API_URL` env var (default `http://localhost:9421/api/auth`) and the helper that GETs `{REMOTE_API_URL}/{uuid}/{msg}` for each chat line. |
 | [patches/0002-wire-chat-forward-into-handler.patch](../patches/0002-wire-chat-forward-into-handler.patch) | Wires `wynn::on_incoming_chat` into the `ChatMessagePacket` handler and replies in-game with `[PicoLimbo] Code sent.` so the player has visible feedback. |
+| [patches/0003-add-wynn-chat-routes-and-kick.patch](../patches/0003-add-wynn-chat-routes-and-kick.patch) | Replaces `REMOTE_API_URL` with `WYNN_CHAT_ROUTES` (comma-separated `<prefix>=<url>` list, longest prefix wins, blank prefix = default). Parses the JSON response and disconnects the player when the matched backend answers with a non-empty `kick_message`. `REMOTE_API_URL` still works as a backwards-compat single-default route. HTTP runs synchronously via `tokio::task::block_in_place` + `Handle::current().block_on(...)` since `PacketHandler::handle` is sync and `process_packet` checks `client_state.should_kick()` right after it returns. |
 
 The path suffix `/api/auth` reflects what dazebot does with the data, not what PicoLimbo does. Don't rename it without coordinating with `../dazebot/api/main.py` (the receiver).
 
@@ -55,7 +56,8 @@ The `ARG PICOLIMBO_REF` default in [docker/Dockerfile](../docker/Dockerfile) is 
 
 ## Configuration
 
-- `REMOTE_API_URL` env var — read by [pico_limbo/src/wynn.rs](../patches/0001-add-wynn-chat-forward-module.patch) at startup. In production, `http://dazebot:${DAZEBOT_PORT}/api/auth` (resolvable on the `verify` Docker network).
+- `WYNN_CHAT_ROUTES` env var — comma-separated `<prefix>=<url>` list read by `pico_limbo/src/wynn.rs` at startup. Longest prefix wins, blank prefix = default backend. Production value (in `vets-deploy/stacks/picolimbo/.env`) is `=http://dazebot:${DAZEBOT_PORT}/api/auth,hall =http://hall-monitor:9423/api/verify` — dazebot's link probe still receives every unmatched line; `hall ` prefix routes to Hall-Monitor's verify endpoint.
+- `REMOTE_API_URL` env var — legacy single-backend var, still honoured as a default-only route when `WYNN_CHAT_ROUTES` is unset. Prefer setting `WYNN_CHAT_ROUTES` even for single-backend deployments so intent is explicit.
 - [server.toml](../server.toml) — starter template. The *live* server.toml lives in `vets-deploy/stacks/picolimbo/server.toml` and is mounted RO into the container.
 
 ## Don't

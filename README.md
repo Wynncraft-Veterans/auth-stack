@@ -28,19 +28,30 @@ fresh from `Quozul/PicoLimbo` at a configurable ref.
 3. The `builder` stage compiles `pico_limbo` against the patched tree.
 4. The final stage is upstream's distroless runtime layout.
 
-The two patches are:
+The three patches are:
 
 - `0001-add-wynn-chat-forward-module.patch` — adds `pico_limbo/src/wynn.rs`
   with `REMOTE_API_URL` env var + the helper that GETs
   `{REMOTE_API_URL}/{uuid}/{msg}` per chat line.
 - `0002-wire-chat-forward-into-handler.patch` — wires `wynn::on_incoming_chat`
   into `ChatMessagePacket` and acks each line with `[PicoLimbo] Code sent.`.
+- `0003-add-wynn-chat-routes-and-kick.patch` — replaces `REMOTE_API_URL`
+  with `WYNN_CHAT_ROUTES` (prefix-routed multi-backend), parses the
+  response JSON, and disconnects the player when the matched backend
+  answers with a non-empty `kick_message`. `REMOTE_API_URL` still works
+  as a backwards-compat default-only route so single-backend deployments
+  don't need env changes.
 
 ## Build / run locally
 
 ```bash
 docker build -t picolimbo:local -f docker/Dockerfile .
+# Single-backend (unchanged):
 docker run --rm -p 25565:25565 -e REMOTE_API_URL=http://host.docker.internal:9421/api/auth picolimbo:local
+# Multi-backend (prefix-routed; blank prefix = default):
+docker run --rm -p 25565:25565 \
+  -e WYNN_CHAT_ROUTES='=http://host.docker.internal:9421/api/auth,hall =http://host.docker.internal:9423/api/verify' \
+  picolimbo:local
 ```
 
 Or via compose:
