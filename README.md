@@ -60,6 +60,13 @@ Both are rendered as MiniMessage, so a backend can colour them:
 vanilla names, plus `<newline>`. Plain prose contains no tags and renders
 as itself, so a backend that sends none is unaffected.
 
+The forward is bounded at 5 seconds. It runs inside the packet handler
+via `block_in_place`, so the player's connection isn't serviced while
+it's outstanding — no keep-alives, no reads. Unbounded, a slow backend
+stops looking like a slow backend and starts looking to the player like
+`IOException: connection aborted`. On timeout they're told to try again
+rather than left guessing.
+
 Reserve the kick for text the player needs *after* the session ends —
 nothing on a Minecraft disconnect screen is clickable or scrollable, so
 it suits a one-shot code and little else. Rejections belong in chat.

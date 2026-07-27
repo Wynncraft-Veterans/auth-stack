@@ -1,0 +1,68 @@
+diff --git a/pico_limbo/src/wynn.rs b/pico_limbo/src/wynn.rs
+index de0b869..f8ed83c 100644
+--- a/pico_limbo/src/wynn.rs
++++ b/pico_limbo/src/wynn.rs
+@@ -1,9 +1,11 @@
+ use tokio::runtime::Handle;
++use tracing::warn;
+ use tokio::task::block_in_place;
+ use uuid::Uuid;
+ 
+ use std::env;
+ use std::sync::LazyLock;
++use std::time::Duration;
+ 
+ // configuration
+ //
+@@ -48,6 +50,24 @@ static ROUTES: LazyLock<Vec<Route>> = LazyLock::new(|| {
+     routes
+ });
+ 
++/// How long a backend gets to answer before we give up on it.
++///
++/// This call runs inside the packet handler via `block_in_place`, so the
++/// player's connection is not being serviced while it is outstanding --
++/// no keep-alives, no reads. Left unbounded, a slow backend stops looking
++/// like a slow backend and starts looking like a dropped connection.
++const BACKEND_TIMEOUT: Duration = Duration::from_secs(5);
++
++/// One client for every forward. Building one per request throws away
++/// connection reuse, which is most of the cost of talking to a service
++/// one Docker network away.
++static HTTP: LazyLock<reqwest::Client> = LazyLock::new(|| {
++    reqwest::Client::builder()
++        .timeout(BACKEND_TIMEOUT)
++        .build()
++        .unwrap_or_default()
++});
++
+ struct Route {
+     prefix_lower: String,
+     prefix_len: usize,
+@@ -115,7 +135,25 @@ fn build_url(base: &str, uuid: Uuid, msg: &str) -> Option<reqwest::Url> {
+ }
+ 
+ async fn fetch_outcome(url: &reqwest::Url) -> Option<ChatOutcome> {
+-    let response = reqwest::get(url.clone()).await.ok()?;
++    let response = match HTTP.get(url.clone()).send().await {
++        Ok(response) => response,
++        Err(error) if error.is_timeout() => {
++            // Say so rather than dropping it. The backend may well have
++            // acted on the request; the player just never heard back, and
++            // silence here is indistinguishable from success.
++            warn!("backend timed out after {BACKEND_TIMEOUT:?}: {url}");
++            return Some(ChatOutcome {
++                kick_message: None,
++                chat_message: Some(
++                    "That took too long to check. Try again in a moment.".to_string(),
++                ),
++            });
++        }
++        Err(error) => {
++            warn!("backend request failed: {error}");
++            return None;
++        }
++    };
+     if !response.status().is_success() {
+         return None;
+     }
