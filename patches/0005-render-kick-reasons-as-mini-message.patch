@@ -1,0 +1,74 @@
+diff --git a/crates/minecraft_packets/src/login/login_disconnect_packet.rs b/crates/minecraft_packets/src/login/login_disconnect_packet.rs
+index b7e9f96..2e93923 100644
+--- a/crates/minecraft_packets/src/login/login_disconnect_packet.rs
++++ b/crates/minecraft_packets/src/login/login_disconnect_packet.rs
+@@ -17,7 +17,12 @@ impl Default for LoginDisconnectPacket {
+ 
+ impl LoginDisconnectPacket {
+     pub fn text(text: impl Into<String>) -> LoginDisconnectPacket {
+-        let component = Component::new(text);
++        Self::component(&Component::new(text))
++    }
++
++    /// Disconnect with an already-styled component, so a kick reason can
++    /// carry colour rather than being flat text.
++    pub fn component(component: &Component) -> LoginDisconnectPacket {
+         Self {
+             reason: component.to_json(),
+         }
+diff --git a/crates/minecraft_packets/src/play/disconnect_packet.rs b/crates/minecraft_packets/src/play/disconnect_packet.rs
+index a7e160f..0276cf3 100644
+--- a/crates/minecraft_packets/src/play/disconnect_packet.rs
++++ b/crates/minecraft_packets/src/play/disconnect_packet.rs
+@@ -12,7 +12,12 @@ pub struct DisconnectPacket {
+ 
+ impl DisconnectPacket {
+     pub fn text(text: impl Into<String>) -> DisconnectPacket {
+-        let component = Component::new(text);
++        Self::component(&Component::new(text))
++    }
++
++    /// Disconnect with an already-styled component, so a kick reason can
++    /// carry colour rather than being flat text.
++    pub fn component(component: &Component) -> DisconnectPacket {
+         Self {
+             reason: component.to_json(),
+             v1_20_3_reason: component.to_nbt(),
+diff --git a/pico_limbo/src/server/network.rs b/pico_limbo/src/server/network.rs
+index 05a6598..b97ceeb 100644
+--- a/pico_limbo/src/server/network.rs
++++ b/pico_limbo/src/server/network.rs
+@@ -13,6 +13,7 @@ use minecraft_packets::play::client_bound_keep_alive_packet::ClientBoundKeepAliv
+ use minecraft_packets::play::disconnect_packet::DisconnectPacket;
+ use minecraft_protocol::prelude::State;
+ use net::packet_stream::PacketStreamError;
++use pico_text_component::prelude::{Component, parse_mini_message};
+ use net::raw_packet::RawPacket;
+ use std::num::TryFromIntError;
+ use std::sync::Arc;
+@@ -294,18 +295,22 @@ async fn kick_client(
+         let state = client_data.client().await;
+         (state.protocol_version(), state.clientbound_state())
+     };
++    // Kick reasons are MiniMessage so a routed backend can colour them.
++    // Plain prose contains no tags and parses to itself, which keeps the
++    // built-in reasons rendering exactly as they did.
++    let component = parse_mini_message(&reason).unwrap_or_else(|_| Component::new(reason));
+     let packet = match state {
+         State::Login => {
+             debug!("Login disconnect");
+-            PacketRegistry::LoginDisconnect(LoginDisconnectPacket::text(reason))
++            PacketRegistry::LoginDisconnect(LoginDisconnectPacket::component(&component))
+         }
+         State::Configuration => {
+             debug!("Configuration disconnect");
+-            PacketRegistry::ConfigurationDisconnect(DisconnectPacket::text(reason))
++            PacketRegistry::ConfigurationDisconnect(DisconnectPacket::component(&component))
+         }
+         State::Play => {
+             debug!("Play disconnect");
+-            PacketRegistry::PlayDisconnect(DisconnectPacket::text(reason))
++            PacketRegistry::PlayDisconnect(DisconnectPacket::component(&component))
+         }
+         _ => {
+             debug!("A user was disconnected from a state where no packet can be sent");

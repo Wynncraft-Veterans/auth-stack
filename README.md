@@ -55,6 +55,11 @@ Each routed backend answers with JSON:
 Otherwise the line is acked with `Code sent.`. Both absent is the normal
 case for dazebot, whose link probe ignores non-code lines.
 
+Both are rendered as MiniMessage, so a backend can colour them:
+`<gold>`, `<gray>`, `<green>`, `<aqua>`, `<bold>` and the rest of the
+vanilla names, plus `<newline>`. Plain prose contains no tags and renders
+as itself, so a backend that sends none is unaffected.
+
 Reserve the kick for text the player needs *after* the session ends —
 nothing on a Minecraft disconnect screen is clickable or scrollable, so
 it suits a one-shot code and little else. Rejections belong in chat.
