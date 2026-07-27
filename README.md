@@ -42,6 +42,23 @@ The three patches are:
   as a backwards-compat default-only route so single-backend deployments
   don't need env changes.
 
+## Chat-forward contract
+
+Each routed backend answers with JSON:
+
+```json
+{"kick_message": "…or null", "chat_message": "…or null"}
+```
+
+`kick_message` disconnects the player with that text. Otherwise
+`chat_message` is sent back in chat and the player stays connected.
+Otherwise the line is acked with `Code sent.`. Both absent is the normal
+case for dazebot, whose link probe ignores non-code lines.
+
+Reserve the kick for text the player needs *after* the session ends —
+nothing on a Minecraft disconnect screen is clickable or scrollable, so
+it suits a one-shot code and little else. Rejections belong in chat.
+
 ## Build / run locally
 
 ```bash
