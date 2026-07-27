@@ -18,11 +18,21 @@ Patch overlay over [Quozul/PicoLimbo](https://github.com/Quozul/PicoLimbo) (Rust
 
 ## Where the modification lives
 
-| Patch | What it does |
-|-------|--------------|
-| [patches/0001-add-wynn-chat-forward-module.patch](../patches/0001-add-wynn-chat-forward-module.patch) | Creates `pico_limbo/src/wynn.rs` with `REMOTE_API_URL` env var (default `http://localhost:9421/api/auth`) and the helper that GETs `{REMOTE_API_URL}/{uuid}/{msg}` for each chat line. |
-| [patches/0002-wire-chat-forward-into-handler.patch](../patches/0002-wire-chat-forward-into-handler.patch) | Wires `wynn::on_incoming_chat` into the `ChatMessagePacket` handler and replies in-game with `[PicoLimbo] Code sent.` so the player has visible feedback. |
-| [patches/0003-add-wynn-chat-routes-and-kick.patch](../patches/0003-add-wynn-chat-routes-and-kick.patch) | Replaces `REMOTE_API_URL` with `WYNN_CHAT_ROUTES` (comma-separated `<prefix>=<url>` list, longest prefix wins, blank prefix = default). Parses the JSON response and disconnects the player when the matched backend answers with a non-empty `kick_message`. `REMOTE_API_URL` still works as a backwards-compat single-default route. HTTP runs synchronously via `tokio::task::block_in_place` + `Handle::current().block_on(...)` since `PacketHandler::handle` is sync and `process_packet` checks `client_state.should_kick()` right after it returns. |
+**One patch per file group, not one per change.** Each of the four owns a
+disjoint set of files and applies to a pristine upstream tree on its own,
+so an upstream bump only conflicts with the patch touching the file
+upstream changed. A new patch groups with the file it edits; it does not
+get appended chronologically. (It was seven patches, staged in the order
+the work happened — `wynn.rs` ended up rewritten by four of them and
+`commands.rs` by three, so half the series described code the other half
+deleted and one early conflict cascaded through all the rest.)
+
+| Patch | Files | What it does |
+|-------|-------|--------------|
+| [patches/0001-add-wynn-chat-forward-module.patch](../patches/0001-add-wynn-chat-forward-module.patch) | `wynn.rs` (new), `lib.rs`, `main.rs` | The whole forwarder. `WYNN_CHAT_ROUTES` is a comma-separated `<prefix>=<url>` list, longest prefix wins, blank prefix = default; `REMOTE_API_URL` still works as a backwards-compat single-default route. GETs `{url}/{uuid}/{msg}` and parses `{kick_message, chat_message}` back into a `ChatOutcome`. Bounded at 5s through one shared `reqwest::Client`. Runs synchronously via `tokio::task::block_in_place` + `Handle::current().block_on(...)`, since `PacketHandler::handle` is sync and `process_packet` checks `client_state.should_kick()` right after it returns. |
+| [patches/0002-wire-chat-forward-into-the-chat-handler.patch](../patches/0002-wire-chat-forward-into-the-chat-handler.patch) | `handlers/play/commands.rs` | Calls `wynn::on_incoming_chat` from `ChatMessagePacket` and acts on the outcome — kick, chat reply, or `[PicoLimbo] Code sent.` as the transmission ack. |
+| [patches/0003-render-kick-reasons-as-mini-message.patch](../patches/0003-render-kick-reasons-as-mini-message.patch) | `login_disconnect_packet.rs`, `disconnect_packet.rs`, `server/network.rs` | Disconnect packets accept a pre-styled component, so a backend's kick reason can carry colour. Plain prose parses to itself, so upstream's own reasons are unchanged. |
+| [patches/0004-drain-the-socket-before-closing-a-kicked-client.patch](../patches/0004-drain-the-socket-before-closing-a-kicked-client.patch) | `server/client_data.rs` | Reads and discards pending input before the socket drops. Without it, closing with unread data in the receive queue sends RST, and the client throws away the Disconnect packet it hadn't read yet — an intermittent `Connection reset` instead of the kick screen, made routine by `block_in_place` stalling the reader. See the README. |
 
 The path suffix `/api/auth` reflects what dazebot does with the data, not what PicoLimbo does. Don't rename it without coordinating with `../dazebot/api/main.py` (the receiver).
 
@@ -76,7 +86,7 @@ the authoritative check: it builds for Linux inside the Dockerfile, which
 a local `cargo check` does not. A build failure never reaches production
 either way — no push means `:rolling` keeps its previous digest.
 
-Backends answer `{kick_message, chat_message}`: a non-empty `kick_message` disconnects the player, otherwise a non-empty `chat_message` is sent back in chat and they stay connected, otherwise the line is acked with `Code sent.`. Only hall-monitor's success path kicks — the invite has to outlive the session — while every rejection replies in chat, because disconnecting someone for a typo means reconnecting to retry (`patches/0004`).
+Backends answer `{kick_message, chat_message}`: a non-empty `kick_message` disconnects the player, otherwise a non-empty `chat_message` is sent back in chat and they stay connected, otherwise the line is acked with `Code sent.`. Only hall-monitor's success path kicks — the invite has to outlive the session — while every rejection replies in chat, because disconnecting someone for a typo means reconnecting to retry (`patches/0002`).
 
 Production value (in `vets-deploy/stacks/picolimbo/.env`) is `=http://dazebot:${DAZEBOT_PORT}/api/auth,hall=http://hall-monitor:9423/api/verify` — dazebot's link probe still receives every unmatched line; the `hall` prefix routes to Hall-Monitor's verify endpoint. No trailing space: representatives type a single-token `HALL<NN>` code, and the prefix is stripped before forwarding so hall-monitor sees the bare digits.
 - `REMOTE_API_URL` env var — legacy single-backend var, still honoured as a default-only route when `WYNN_CHAT_ROUTES` is unset. Prefer setting `WYNN_CHAT_ROUTES` even for single-backend deployments so intent is explicit.

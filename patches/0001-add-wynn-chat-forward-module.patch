@@ -1,37 +1,203 @@
+diff --git a/pico_limbo/src/lib.rs b/pico_limbo/src/lib.rs
+index 082e945..1696993 100644
+--- a/pico_limbo/src/lib.rs
++++ b/pico_limbo/src/lib.rs
+@@ -7,6 +7,7 @@ mod kick_messages;
+ mod server;
+ mod server_brand;
+ mod server_state;
++pub mod wynn;
+ 
+ use crate::cli::Cli;
+ use clap::Parser;
+diff --git a/pico_limbo/src/main.rs b/pico_limbo/src/main.rs
+index 93a877c..80c59e8 100644
+--- a/pico_limbo/src/main.rs
++++ b/pico_limbo/src/main.rs
+@@ -8,6 +8,7 @@ mod kick_messages;
+ mod server;
+ mod server_brand;
+ mod server_state;
++pub mod wynn;
+ 
+ use crate::cli::Cli;
+ use clap::Parser;
 diff --git a/pico_limbo/src/wynn.rs b/pico_limbo/src/wynn.rs
 new file mode 100644
-index 0000000..c76bdac
+index 0000000..f8ed83c
 --- /dev/null
 +++ b/pico_limbo/src/wynn.rs
-@@ -0,0 +1,31 @@
+@@ -0,0 +1,173 @@
++use tokio::runtime::Handle;
++use tracing::warn;
++use tokio::task::block_in_place;
 +use uuid::Uuid;
 +
 +use std::env;
 +use std::sync::LazyLock;
++use std::time::Duration;
 +
 +// configuration
 +//
-+// REMOTE_API_URL is the base URL that every in-game chat line is GET'd against
-+// as `{REMOTE_API_URL}/{uuid}/{msg}`. The receiving service is *not* a chat
-+// bridge — it is dazebot's account-link probe, which only acts on messages
-+// containing an active link code and silently drops everything else. The
-+// path suffix `/api/auth` reflects that purpose. Override with the env var
-+// when running against a non-default deployment.
++// WYNN_CHAT_ROUTES is a comma-separated list of `<prefix>=<url>` entries.
++// The first entry whose prefix case-insensitively matches the start of the
++// chat line wins; the prefix is stripped before forwarding. An entry with
++// an empty prefix (`=<url>`) is the default fallback and matches anything.
++// Longer prefixes are tried first so a specific prefix always beats the
++// default.
 +//
-+// The reverse direction (server-initiated chat to a specific player via an
-+// HTTP `/send` endpoint and an in-process registry) lived here historically;
-+// it has been moved to the `two-way-api-archive` branch and removed from
-+// master because dazebot does not consume it. Restore from that branch if
-+// you need server-push chat in the future.
-+static REMOTE_API_URL: LazyLock<String> = LazyLock::new(|| {
-+    env::var("REMOTE_API_URL").unwrap_or_else(|_| "http://localhost:9421/api/auth".to_string())
++// Backwards-compat: if WYNN_CHAT_ROUTES is unset but REMOTE_API_URL is,
++// treat REMOTE_API_URL as a single default-only route so existing single-
++// backend deployments (dazebot only) keep working without touching env.
++//
++// The forward is `GET {url}/{uuid}/{stripped-msg}` and the response body
++// is parsed as JSON: a non-empty `kick_message` disconnects the player
++// with that text. Failures (network, non-2xx, missing/empty field) are
++// silent -- the chat line is dropped and the player stays connected.
++static ROUTES: LazyLock<Vec<Route>> = LazyLock::new(|| {
++    let raw = env::var("WYNN_CHAT_ROUTES").ok().unwrap_or_else(|| {
++        env::var("REMOTE_API_URL")
++            .map(|url| format!("={url}"))
++            .unwrap_or_else(|_| "=http://localhost:9421/api/auth".to_string())
++    });
++    let mut routes: Vec<Route> = raw
++        .split(',')
++        .filter_map(|entry| {
++            let (prefix, url) = entry.split_once('=')?;
++            let url = url.trim();
++            if url.is_empty() {
++                return None;
++            }
++            Some(Route {
++                prefix_lower: prefix.to_lowercase(),
++                prefix_len: prefix.len(),
++                base_url: url.to_string(),
++            })
++        })
++        .collect();
++    // Longest prefix first so `hall ` (specific) beats `` (default).
++    routes.sort_by(|a, b| b.prefix_len.cmp(&a.prefix_len));
++    routes
 +});
 +
-+// fires when a player sends a message in the minecraft chat
-+pub fn on_incoming_chat(uuid: Uuid, msg: String) {
-+    tokio::spawn(async move {
-+        let base_url = &*REMOTE_API_URL;
-+        let url = format!("{base_url}/{uuid}/{msg}");
-+        let _ = reqwest::get(&url).await;
-+    });
++/// How long a backend gets to answer before we give up on it.
++///
++/// This call runs inside the packet handler via `block_in_place`, so the
++/// player's connection is not being serviced while it is outstanding --
++/// no keep-alives, no reads. Left unbounded, a slow backend stops looking
++/// like a slow backend and starts looking like a dropped connection.
++const BACKEND_TIMEOUT: Duration = Duration::from_secs(5);
++
++/// One client for every forward. Building one per request throws away
++/// connection reuse, which is most of the cost of talking to a service
++/// one Docker network away.
++static HTTP: LazyLock<reqwest::Client> = LazyLock::new(|| {
++    reqwest::Client::builder()
++        .timeout(BACKEND_TIMEOUT)
++        .build()
++        .unwrap_or_default()
++});
++
++struct Route {
++    prefix_lower: String,
++    prefix_len: usize,
++    base_url: String,
++}
++
++/// What a routed backend asked us to do about one chat line.
++///
++/// `kick_message` is for the single outcome the player has to keep
++/// reading after the session ends -- the Discord invite, which lives on
++/// the disconnect screen. Every rejection uses `chat_message` instead:
++/// disconnecting someone for a mistyped code means reconnecting just to
++/// try again, which is a poor trade for a typo.
++#[derive(Default)]
++pub struct ChatOutcome {
++    pub kick_message: Option<String>,
++    pub chat_message: Option<String>,
++}
++
++impl ChatOutcome {
++    const fn is_empty(&self) -> bool {
++        self.kick_message.is_none() && self.chat_message.is_none()
++    }
++}
++
++fn match_route(msg: &str) -> Option<(&'static Route, String)> {
++    let msg_lower = msg.to_lowercase();
++    for route in &*ROUTES {
++        if route.prefix_len == 0 {
++            return Some((route, msg.to_string()));
++        }
++        if msg_lower.starts_with(&route.prefix_lower) {
++            let stripped = msg[route.prefix_len..].trim_start().to_string();
++            return Some((route, stripped));
++        }
++    }
++    None
++}
++
++// fires when a player sends a message in the minecraft chat.
++//
++// Returns the backend's `ChatOutcome`, or `None` when no route matched,
++// the call failed, or the response asked for nothing. The caller
++// disconnects on `kick_message` and sends `chat_message` back in chat.
++//
++// Runs the HTTP call synchronously so the caller can act on the result.
++// `PacketHandler::handle` is a sync trait method, so we hand off the
++// current worker via `block_in_place` + `Handle::current().block_on(...)`
++// -- safe on tokio default multi-threaded runtime (see `#[tokio::main]`
++// in `main.rs`).
++pub fn on_incoming_chat(uuid: Uuid, msg: String) -> Option<ChatOutcome> {
++    let (route, forwarded) = match_route(&msg)?;
++    let url = build_url(&route.base_url, uuid, &forwarded)?;
++    block_in_place(|| Handle::current().block_on(async move { fetch_outcome(&url).await }))
++}
++
++fn build_url(base: &str, uuid: Uuid, msg: &str) -> Option<reqwest::Url> {
++    let mut url = reqwest::Url::parse(base).ok()?;
++    {
++        let mut segments = url.path_segments_mut().ok()?;
++        segments.push(&uuid.to_string());
++        segments.push(msg);
++    }
++    Some(url)
++}
++
++async fn fetch_outcome(url: &reqwest::Url) -> Option<ChatOutcome> {
++    let response = match HTTP.get(url.clone()).send().await {
++        Ok(response) => response,
++        Err(error) if error.is_timeout() => {
++            // Say so rather than dropping it. The backend may well have
++            // acted on the request; the player just never heard back, and
++            // silence here is indistinguishable from success.
++            warn!("backend timed out after {BACKEND_TIMEOUT:?}: {url}");
++            return Some(ChatOutcome {
++                kick_message: None,
++                chat_message: Some(
++                    "That took too long to check. Try again in a moment.".to_string(),
++                ),
++            });
++        }
++        Err(error) => {
++            warn!("backend request failed: {error}");
++            return None;
++        }
++    };
++    if !response.status().is_success() {
++        return None;
++    }
++    let body: serde_json::Value = response.json().await.ok()?;
++    let outcome = ChatOutcome {
++        kick_message: string_field(&body, "kick_message"),
++        chat_message: string_field(&body, "chat_message"),
++    };
++    if outcome.is_empty() { None } else { Some(outcome) }
++}
++
++fn string_field(body: &serde_json::Value, key: &str) -> Option<String> {
++    body.get(key)
++        .and_then(|v| v.as_str())
++        .filter(|s| !s.is_empty())
++        .map(String::from)
 +}

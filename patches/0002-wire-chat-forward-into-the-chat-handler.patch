@@ -1,0 +1,70 @@
+diff --git a/pico_limbo/src/handlers/play/commands.rs b/pico_limbo/src/handlers/play/commands.rs
+index 728f7c3..67f1bd2 100644
+--- a/pico_limbo/src/handlers/play/commands.rs
++++ b/pico_limbo/src/handlers/play/commands.rs
+@@ -1,3 +1,4 @@
++use crate::handlers::configuration::send_message;
+ use crate::handlers::play::set_player_position_and_rotation::teleport_player_to_spawn;
+ use crate::server::batch::Batch;
+ use crate::server::client_state::ClientState;
+@@ -9,6 +10,7 @@ use minecraft_packets::play::chat_message_packet::ChatMessagePacket;
+ use minecraft_packets::play::client_bound_player_abilities_packet::ClientBoundPlayerAbilitiesPacket;
+ use minecraft_packets::play::transfer_packet::TransferPacket;
+ use minecraft_protocol::prelude::{ProtocolVersion, VarInt};
++use pico_text_component::prelude::parse_mini_message;
+ use thiserror::Error;
+ use tracing::{info, warn};
+ 
+@@ -33,11 +35,52 @@ impl PacketHandler for ChatMessagePacket {
+         let mut batch = Batch::new();
+         if let Some(command) = self.get_command() {
+             run_command(client_state, server_state, command, &mut batch);
++        } else {
++            info!("<{}> {}", client_state.get_username(), self.get_message());
++            let outcome = crate::wynn::on_incoming_chat(
++                client_state.get_unique_id(),
++                self.get_message().to_string(),
++            )
++            .unwrap_or_default();
++            if let Some(reason) = outcome.kick_message {
++                // A routed backend (e.g. hall-monitor) told us to
++                // disconnect this player. process_packet checks
++                // client_state.should_kick() right after this handler
++                // returns and sends the actual Disconnect packet, so we
++                // just record the intent here.
++                client_state.kick(&reason);
++            } else if let Some(text) = outcome.chat_message {
++                // A rejection the player can act on without reconnecting.
++                send_chat(&mut batch, client_state, &text);
++            } else if let Ok(component) =
++                parse_mini_message("<gray>[PicoLimbo]</gray> <green>Code sent.</green>")
++            {
++                // The matched backend silently accepted (dazebot's link
++                // probe drops non-link lines) or no route matched at all.
++                // Ack the transmission so the player has visible feedback.
++                send_message(&mut batch, &component, client_state.protocol_version());
++            }
+         }
+         Ok(batch)
+     }
+ }
+ 
++/// Send a backend-supplied line to the player.
++///
++/// The text is decorated with `MiniMessage` markup for colour. A backend
++/// that puts a literal `<` in its message would make that parse fail, so
++/// the undecorated text is tried next rather than the player being told
++/// nothing at all.
++fn send_chat(batch: &mut Batch, client_state: &ClientState, text: &str) {
++    let decorated = format!("<gray>[Guild Hall]</gray> <yellow>{text}</yellow>");
++    let component = parse_mini_message(&decorated).or_else(|_| parse_mini_message(text));
++    if let Ok(component) = component {
++        send_message(batch, &component, client_state.protocol_version());
++    } else {
++        warn!("could not render backend chat message: {}", text);
++    }
++}
++
+ fn run_command(
+     client_state: &mut ClientState,
+     server_state: &ServerState,

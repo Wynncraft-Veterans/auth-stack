@@ -28,32 +28,37 @@ fresh from `Quozul/PicoLimbo` at a configurable ref.
 3. The `builder` stage compiles `pico_limbo` against the patched tree.
 4. The final stage is upstream's distroless runtime layout.
 
-The first three patches are:
+The four patches are:
 
 - `0001-add-wynn-chat-forward-module.patch` — adds `pico_limbo/src/wynn.rs`
-  with `REMOTE_API_URL` env var + the helper that GETs
-  `{REMOTE_API_URL}/{uuid}/{msg}` per chat line.
-- `0002-wire-chat-forward-into-handler.patch` — wires `wynn::on_incoming_chat`
-  into `ChatMessagePacket` and acks each line with `[PicoLimbo] Code sent.`.
-- `0003-add-wynn-chat-routes-and-kick.patch` — replaces `REMOTE_API_URL`
-  with `WYNN_CHAT_ROUTES` (prefix-routed multi-backend), parses the
-  response JSON, and disconnects the player when the matched backend
-  answers with a non-empty `kick_message`. `REMOTE_API_URL` still works
-  as a backwards-compat default-only route so single-backend deployments
-  don't need env changes.
-
-Then, from operating it:
-
-- `0004-reply-in-chat-instead-of-kicking-on-error.patch` — rejections
-  answer in chat and leave the player connected; only the one outcome
-  they need after the session ends disconnects them.
-- `0005-render-kick-reasons-as-mini-message.patch` — kick reasons go
-  through the MiniMessage parser, so a backend can colour them.
-- `0006-bound-the-backend-request-with-a-timeout.patch` — 5s ceiling on
-  the forward, and a shared client so it isn't rebuilt per request.
-- `0007-drain-the-socket-before-closing-a-kicked-client.patch` — read and
+  and registers the module. Owns `WYNN_CHAT_ROUTES` (a comma-separated
+  `prefix=url` list, blank prefix = default backend), the longest-prefix
+  match, the forward itself, and the `ChatOutcome` it parses back out.
+  The request is bounded at 5s and goes through one shared client.
+  `REMOTE_API_URL` still works as a default-only route, so a
+  single-backend deployment needs no env change.
+- `0002-wire-chat-forward-into-the-chat-handler.patch` — calls
+  `wynn::on_incoming_chat` from `ChatMessagePacket` and acts on the
+  outcome: disconnect on `kick_message`, reply in chat on
+  `chat_message`, otherwise ack the line with `[PicoLimbo] Code sent.`.
+- `0003-render-kick-reasons-as-mini-message.patch` — disconnect packets
+  take a pre-styled component, so a kick reason can carry colour.
+- `0004-drain-the-socket-before-closing-a-kicked-client.patch` — read and
   discard whatever the client still had in flight before letting the
   socket drop. See [Why the kick needs a drain](#why-the-kick-needs-a-drain).
+
+**Each patch owns a disjoint set of files, and each applies to a pristine
+upstream tree on its own.** That's deliberate: an upstream bump only ever
+conflicts with the patches touching the file upstream changed, and those
+regenerate independently. The series was seven patches for a while, staged
+in the order the work happened — which meant `wynn.rs` was rewritten by
+four of them and `commands.rs` by three, so half the series described code
+the other half deleted, and a conflict in an early patch cascaded through
+every later one. Patch files are a diff, not a history; auth-stack's git
+log is the history.
+
+When you add one, group it by the file it touches rather than appending it
+chronologically.
 
 ## Why the kick needs a drain
 
@@ -74,7 +79,7 @@ when the kick lands. Whether it bites depends on whether the player
 happened to move, which is why the same code disconnects cleanly on one
 attempt and resets on the next.
 
-Patch `0007` reads and discards until the client closes its own half or
+Patch `0004` reads and discards until the client closes its own half or
 500ms passes, so the queue is empty by the time the socket drops. It
 applies to every disconnect path, not just the chat-forward one.
 

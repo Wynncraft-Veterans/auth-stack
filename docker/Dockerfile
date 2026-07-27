@@ -33,11 +33,12 @@ COPY patches/ /patches/
 RUN set -e; \
     if ls /patches/*.patch >/dev/null 2>&1; then \
         echo "Applying patches against ${PICOLIMBO_REF}:"; \
-        # Apply one at a time — `git apply` with multiple files (or a \
-        # glob) validates each patch against the *pristine* tree, not \
-        # cumulatively, which breaks the moment two patches touch the \
-        # same file. The loop advances state between patches so later \
-        # ones see the intermediate tree they were regenerated against. \
+        # Apply one at a time. The series is currently disjoint by file, \
+        # so a glob would work today — but `git apply` validates every \
+        # patch in a glob against the *pristine* tree rather than \
+        # cumulatively, so it breaks silently the moment two patches \
+        # touch the same file again. The loop also names the offending \
+        # patch on failure instead of failing as one opaque batch. \
         for patch in /patches/*.patch; do \
             echo "  -> $(basename "$patch")"; \
             git apply --check "$patch"; \
