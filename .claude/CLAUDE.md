@@ -56,7 +56,27 @@ The `ARG PICOLIMBO_REF` default in [docker/Dockerfile](../docker/Dockerfile) is 
 
 ## Configuration
 
-- `WYNN_CHAT_ROUTES` env var — comma-separated `<prefix>=<url>` list read by `pico_limbo/src/wynn.rs` at startup. Longest prefix wins, blank prefix = default backend. Backends answer `{kick_message, chat_message}`: a non-empty `kick_message` disconnects the player, otherwise a non-empty `chat_message` is sent back in chat and they stay connected, otherwise the line is acked with `Code sent.`. Only hall-monitor's success path kicks — the invite has to outlive the session — while every rejection replies in chat, because disconnecting someone for a typo means reconnecting to retry (`patches/0004`).
+- `WYNN_CHAT_ROUTES` env var — comma-separated `<prefix>=<url>` list read by `pico_limbo/src/wynn.rs` at startup. Longest prefix wins, blank prefix = default backend. ## Verifying a patch before you push it
+
+The repo holds no upstream code, so patches are written against a tree
+you materialise:
+
+```bash
+git clone --depth 1 --branch v1.13.2+mc26.2 https://github.com/Quozul/PicoLimbo.git /tmp/pl
+cd /tmp/pl && for p in <auth-stack>/patches/*.patch; do git apply "$p"; done
+cargo check -p pico_limbo      # ~1 min cold, seconds after
+cargo clippy -p pico_limbo     # the crate enables pedantic lints
+```
+
+Regenerate a patch by committing that state, editing, and `git diff`.
+Applying cleanly is not the same as compiling — check both.
+
+Note that CI (`on: pull_request`) builds without publishing, so a PR is
+the authoritative check: it builds for Linux inside the Dockerfile, which
+a local `cargo check` does not. A build failure never reaches production
+either way — no push means `:rolling` keeps its previous digest.
+
+Backends answer `{kick_message, chat_message}`: a non-empty `kick_message` disconnects the player, otherwise a non-empty `chat_message` is sent back in chat and they stay connected, otherwise the line is acked with `Code sent.`. Only hall-monitor's success path kicks — the invite has to outlive the session — while every rejection replies in chat, because disconnecting someone for a typo means reconnecting to retry (`patches/0004`).
 
 Production value (in `vets-deploy/stacks/picolimbo/.env`) is `=http://dazebot:${DAZEBOT_PORT}/api/auth,hall=http://hall-monitor:9423/api/verify` — dazebot's link probe still receives every unmatched line; the `hall` prefix routes to Hall-Monitor's verify endpoint. No trailing space: representatives type a single-token `HALL<NN>` code, and the prefix is stripped before forwarding so hall-monitor sees the bare digits.
 - `REMOTE_API_URL` env var — legacy single-backend var, still honoured as a default-only route when `WYNN_CHAT_ROUTES` is unset. Prefer setting `WYNN_CHAT_ROUTES` even for single-backend deployments so intent is explicit.

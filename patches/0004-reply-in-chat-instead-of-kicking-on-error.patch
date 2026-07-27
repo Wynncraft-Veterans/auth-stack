@@ -1,5 +1,5 @@
 diff --git a/pico_limbo/src/handlers/play/commands.rs b/pico_limbo/src/handlers/play/commands.rs
-index 0e25628..2754788 100644
+index 0e25628..67f1bd2 100644
 --- a/pico_limbo/src/handlers/play/commands.rs
 +++ b/pico_limbo/src/handlers/play/commands.rs
 @@ -37,24 +37,27 @@ impl PacketHandler for ChatMessagePacket {
@@ -43,7 +43,7 @@ index 0e25628..2754788 100644
  
 +/// Send a backend-supplied line to the player.
 +///
-+/// The text is decorated with MiniMessage markup for colour. A backend
++/// The text is decorated with `MiniMessage` markup for colour. A backend
 +/// that puts a literal `<` in its message would make that parse fail, so
 +/// the undecorated text is tried next rather than the player being told
 +/// nothing at all.
@@ -61,7 +61,7 @@ index 0e25628..2754788 100644
      client_state: &mut ClientState,
      server_state: &ServerState,
 diff --git a/pico_limbo/src/wynn.rs b/pico_limbo/src/wynn.rs
-index 9354660..4fb3217 100644
+index 9354660..de0b869 100644
 --- a/pico_limbo/src/wynn.rs
 +++ b/pico_limbo/src/wynn.rs
 @@ -54,6 +54,25 @@ struct Route {
@@ -82,7 +82,7 @@ index 9354660..4fb3217 100644
 +}
 +
 +impl ChatOutcome {
-+    fn is_empty(&self) -> bool {
++    const fn is_empty(&self) -> bool {
 +        self.kick_message.is_none() && self.chat_message.is_none()
 +    }
 +}
