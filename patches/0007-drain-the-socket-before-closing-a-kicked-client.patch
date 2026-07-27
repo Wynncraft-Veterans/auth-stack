@@ -1,0 +1,64 @@
+diff --git a/pico_limbo/src/server/client_data.rs b/pico_limbo/src/server/client_data.rs
+index fd8da7e..53ec278 100644
+--- a/pico_limbo/src/server/client_data.rs
++++ b/pico_limbo/src/server/client_data.rs
+@@ -6,10 +6,43 @@ use net::raw_packet::RawPacket;
+ use std::ops::Add;
+ use std::sync::Arc;
+ use std::time::Duration;
+-use tokio::io::AsyncWriteExt;
++use tokio::io::{AsyncReadExt, AsyncWriteExt};
+ use tokio::net::TcpStream;
+ use tokio::sync::Mutex;
+-use tokio::time::Instant;
++use tokio::time::{Instant, timeout};
++
++/// How long to keep reading a disconnecting client before giving up on it.
++///
++/// Only spent on connections that are already closing, and normally cut
++/// short by the client's own FIN arriving.
++const DRAIN_TIMEOUT: Duration = Duration::from_millis(500);
++
++/// Read and discard whatever the client still has in flight, until it
++/// closes its own half or [`DRAIN_TIMEOUT`] elapses.
++///
++/// Closing a socket that still has unread data in its receive queue makes
++/// the kernel send RST instead of finishing the graceful close, and an RST
++/// tells the peer's TCP stack to throw away its receive buffer — including
++/// a Disconnect packet we successfully wrote moments earlier. The player
++/// sees `SocketException: Connection reset` and no kick screen at all.
++///
++/// Any handler that blocks before disconnecting makes this likely rather
++/// than theoretical: while it blocks, nothing is reading the socket, so
++/// everything the client sends in that window is still queued when the
++/// kick lands. Whether it bites depends on whether the player happened to
++/// move, which is why the same kick works one attempt and not the next.
++async fn drain_until_closed(socket: &mut TcpStream) {
++    let mut scratch = [0u8; 1024];
++    let _ = timeout(DRAIN_TIMEOUT, async {
++        loop {
++            match socket.read(&mut scratch).await {
++                Ok(0) | Err(_) => break,
++                Ok(_) => {}
++            }
++        }
++    })
++    .await;
++}
+ 
+ pub struct ClientData {
+     client_state: Arc<Mutex<ClientState>>,
+@@ -58,7 +91,12 @@ impl ClientData {
+     }
+ 
+     pub async fn shutdown(&self) -> Result<(), PacketStreamError> {
+-        self.stream().await.get_stream().shutdown().await?;
++        {
++            let mut stream = self.stream().await;
++            let socket = stream.get_stream();
++            socket.shutdown().await?;
++            drain_until_closed(socket).await;
++        }
+         self.interval().await.clear_interval().await;
+         Ok(())
+     }

@@ -7,7 +7,7 @@ Production server: `verify.wynnvets.org:25565`.
 ## What this repo holds
 
 ```
-patches/                          The entire functional delta (2 patches, ~50 LOC).
+patches/                          The entire functional delta (7 patches).
 docker/Dockerfile                 Clones upstream + applies patches + builds.
 docker-compose.yml                Local dev convenience (port 30066).
 .github/workflows/                CI: verify-patches (per-PR) + upstream-smoke (nightly).
@@ -28,7 +28,7 @@ fresh from `Quozul/PicoLimbo` at a configurable ref.
 3. The `builder` stage compiles `pico_limbo` against the patched tree.
 4. The final stage is upstream's distroless runtime layout.
 
-The three patches are:
+The first three patches are:
 
 - `0001-add-wynn-chat-forward-module.patch` — adds `pico_limbo/src/wynn.rs`
   with `REMOTE_API_URL` env var + the helper that GETs
@@ -41,6 +41,42 @@ The three patches are:
   answers with a non-empty `kick_message`. `REMOTE_API_URL` still works
   as a backwards-compat default-only route so single-backend deployments
   don't need env changes.
+
+Then, from operating it:
+
+- `0004-reply-in-chat-instead-of-kicking-on-error.patch` — rejections
+  answer in chat and leave the player connected; only the one outcome
+  they need after the session ends disconnects them.
+- `0005-render-kick-reasons-as-mini-message.patch` — kick reasons go
+  through the MiniMessage parser, so a backend can colour them.
+- `0006-bound-the-backend-request-with-a-timeout.patch` — 5s ceiling on
+  the forward, and a shared client so it isn't rebuilt per request.
+- `0007-drain-the-socket-before-closing-a-kicked-client.patch` — read and
+  discard whatever the client still had in flight before letting the
+  socket drop. See [Why the kick needs a drain](#why-the-kick-needs-a-drain).
+
+## Why the kick needs a drain
+
+Upstream's `ClientData::shutdown` sends FIN and lets the `TcpStream`
+drop. Closing a socket that still has unread data in its receive queue
+makes the kernel send RST rather than finish the graceful close, and an
+RST tells the peer to discard its receive buffer — including a Disconnect
+packet written milliseconds earlier. The player sees
+`SocketException: Connection reset`, or on Windows
+`IOException: An established connection was aborted by the software in
+your host machine`, and never sees the kick screen.
+
+The chat forward is what turns this from theoretical into routine: it
+runs inside the packet handler via `block_in_place`, so for the 300ms–1s
+it takes, nothing is reading the socket. Everything the player's client
+sends in that window — movement, keep-alive replies — is still queued
+when the kick lands. Whether it bites depends on whether the player
+happened to move, which is why the same code disconnects cleanly on one
+attempt and resets on the next.
+
+Patch `0007` reads and discards until the client closes its own half or
+500ms passes, so the queue is empty by the time the socket drops. It
+applies to every disconnect path, not just the chat-forward one.
 
 ## Chat-forward contract
 
@@ -65,7 +101,8 @@ via `block_in_place`, so the player's connection isn't serviced while
 it's outstanding — no keep-alives, no reads. Unbounded, a slow backend
 stops looking like a slow backend and starts looking to the player like
 `IOException: connection aborted`. On timeout they're told to try again
-rather than left guessing.
+rather than left guessing. That same stall is what made the missing
+socket drain bite; see above.
 
 Reserve the kick for text the player needs *after* the session ends —
 nothing on a Minecraft disconnect screen is clickable or scrollable, so
